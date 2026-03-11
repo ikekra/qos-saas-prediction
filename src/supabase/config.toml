@@ -1,0 +1,22 @@
+project_id = "envjjulupltdixvericz"
+
+[functions.run-qos-test]
+verify_jwt = true
+
+[functions.seed-services]
+verify_jwt = false
+
+[functions.get-recommendations]
+verify_jwt = true
+
+[functions.compare-services]
+verify_jwt = true
+
+[functions.test-service]
+verify_jwt = true
+
+[functions.predict-qos]
+verify_jwt = true
+
+[functions.sync-publicapis]
+verify_jwt = false

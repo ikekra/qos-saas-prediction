@@ -1,0 +1,65 @@
+{
+  "generated_at_utc": "2026-02-26T18:41:55.398444+00:00",
+  "dataset": "C:\\Users\\Asus\\Desktop\\New folder\\source\\src\\qos_dataset.csv",
+  "rows_used": 3000,
+  "features": [
+    "latency",
+    "throughput",
+    "availability",
+    "reliability",
+    "response_time"
+  ],
+  "target": "efficiency_score",
+  "cross_validation_folds": 5,
+  "models": [
+    {
+      "model_name": "LinearRegression",
+      "holdout_r2": 0.5350180712457523,
+      "holdout_mae": 1.4589510360271216,
+      "holdout_rmse": 1.8122086999937321,
+      "cv_r2_mean": 0.517871251901078,
+      "cv_r2_std": 0.0102255950735086,
+      "cv_mae_mean": 1.4973954108806848,
+      "cv_mae_std": 0.027420396685500035,
+      "cv_rmse_mean": 1.885123308789174,
+      "cv_rmse_std": 0.025610098655941986
+    },
+    {
+      "model_name": "RandomForest",
+      "holdout_r2": 0.49053781600221924,
+      "holdout_mae": 1.5374440288690137,
+      "holdout_rmse": 1.896907485039456,
+      "cv_r2_mean": 0.49055274044924263,
+      "cv_r2_std": 0.025052185535216417,
+      "cv_mae_mean": 1.5474202139677766,
+      "cv_mae_std": 0.04385333539161786,
+      "cv_rmse_mean": 1.9370914765526248,
+      "cv_rmse_std": 0.03942932172465738
+    },
+    {
+      "model_name": "GradientBoosting",
+      "holdout_r2": 0.5125877551097682,
+      "holdout_mae": 1.500049893588125,
+      "holdout_rmse": 1.8554035851105533,
+      "cv_r2_mean": 0.5026164814792121,
+      "cv_r2_std": 0.020923179941568885,
+      "cv_mae_mean": 1.530681035599976,
+      "cv_mae_std": 0.03228445131058804,
+      "cv_rmse_mean": 1.9142337098307443,
+      "cv_rmse_std": 0.03455610714168575
+    }
+  ],
+  "best_model": {
+    "model_name": "LinearRegression",
+    "holdout_r2": 0.5350180712457523,
+    "holdout_mae": 1.4589510360271216,
+    "holdout_rmse": 1.8122086999937321,
+    "cv_r2_mean": 0.517871251901078,
+    "cv_r2_std": 0.0102255950735086,
+    "cv_mae_mean": 1.4973954108806848,
+    "cv_mae_std": 0.027420396685500035,
+    "cv_rmse_mean": 1.885123308789174,
+    "cv_rmse_std": 0.025610098655941986
+  },
+  "selection_rule": "Highest cv_r2_mean, then highest holdout_r2, then lowest cv_rmse_mean, then lowest holdout_rmse"
+}
