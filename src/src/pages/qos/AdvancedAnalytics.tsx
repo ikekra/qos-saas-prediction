@@ -55,6 +55,14 @@ type ServiceScore = {
   avg_throughput: number;
 };
 
+const toNumber = (value: number | null | undefined) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+
+const getBinIndex = (value: number, bins: number[]) => {
+  const idx = bins.findIndex((b, i) => value >= b && value < bins[i + 1]);
+  if (idx === -1) return bins.length - 2;
+  return Math.min(bins.length - 2, Math.max(0, idx));
+};
+
 export default function AdvancedAnalytics() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
@@ -129,15 +137,15 @@ export default function AdvancedAnalytics() {
       const rows = byService[service.id] || [];
       const avgEfficiency =
         rows.length > 0
-          ? rows.reduce((sum, r) => sum + r.predicted_efficiency, 0) / rows.length
-          : service.availability_score ?? 0;
+          ? rows.reduce((sum, r) => sum + toNumber(r.predicted_efficiency), 0) / rows.length
+          : toNumber(service.availability_score);
       const avgLatency =
         rows.length > 0
-          ? rows.reduce((sum, r) => sum + r.latency, 0) / rows.length
-          : service.base_latency_estimate ?? 0;
+          ? rows.reduce((sum, r) => sum + toNumber(r.latency), 0) / rows.length
+          : toNumber(service.base_latency_estimate);
       const avgThroughput =
         rows.length > 0
-          ? rows.reduce((sum, r) => sum + r.throughput, 0) / rows.length
+          ? rows.reduce((sum, r) => sum + toNumber(r.throughput), 0) / rows.length
           : 0;
 
       return {
@@ -169,7 +177,7 @@ export default function AdvancedAnalytics() {
         .reverse()
         .map((p) => ({
           time: format(new Date(p.created_at), "MM-dd HH:mm"),
-          efficiency: p.predicted_efficiency,
+          efficiency: toNumber(p.predicted_efficiency),
         })),
     [filteredPredictions],
   );
@@ -181,14 +189,10 @@ export default function AdvancedAnalytics() {
     const buckets: Record<string, number> = {};
 
     filteredPredictions.forEach((p) => {
-      const latIdx = Math.min(
-        latencyBins.length - 2,
-        latencyBins.findIndex((b, i) => p.latency >= b && p.latency < latencyBins[i + 1]),
-      );
-      const effIdx = Math.min(
-        efficiencyBins.length - 2,
-        efficiencyBins.findIndex((b, i) => p.predicted_efficiency >= b && p.predicted_efficiency < efficiencyBins[i + 1]),
-      );
+      const latencyValue = toNumber(p.latency);
+      const efficiencyValue = toNumber(p.predicted_efficiency);
+      const latIdx = getBinIndex(latencyValue, latencyBins);
+      const effIdx = getBinIndex(efficiencyValue, efficiencyBins);
       const key = `${latIdx}-${effIdx}`;
       buckets[key] = (buckets[key] || 0) + 1;
     });
@@ -206,7 +210,7 @@ export default function AdvancedAnalytics() {
   const totalPredictions = filteredPredictions.length;
   const avgEfficiency =
     totalPredictions > 0
-      ? filteredPredictions.reduce((sum, p) => sum + p.predicted_efficiency, 0) / totalPredictions
+      ? filteredPredictions.reduce((sum, p) => sum + toNumber(p.predicted_efficiency), 0) / totalPredictions
       : 0;
 
   const exportTableToCsv = () => {
@@ -320,7 +324,7 @@ export default function AdvancedAnalytics() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Categories</SelectItem>
-                  {Array.from(new Set(services.map((s) => s.category))).map((category) => (
+                  {Array.from(new Set(services.map((s) => s.category).filter(Boolean))).map((category) => (
                     <SelectItem key={category} value={category}>
                       {category}
                     </SelectItem>

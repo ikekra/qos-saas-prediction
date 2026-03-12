@@ -42,7 +42,8 @@ export default function RecommendationsUI() {
         .eq("service.is_active", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      setRecs((data || []) as Recommendation[]);
+      const cleaned = (data || []).filter((rec) => rec.service) as Recommendation[];
+      setRecs(cleaned);
     } catch (error: any) {
       toast({
         title: "Failed to load recommendations",
@@ -82,11 +83,11 @@ export default function RecommendationsUI() {
   };
 
   const categories = Array.from(
-    new Set(recs.map((rec) => rec.service.category).filter(Boolean)),
-  );
+    new Set(recs.map((rec) => rec.service?.category).filter(Boolean)),
+  ) as string[];
   const filteredRecs = categoryFilter === "all"
     ? recs
-    : recs.filter((rec) => rec.service.category === categoryFilter);
+    : recs.filter((rec) => rec.service?.category === categoryFilter);
 
   return (
     <div className="min-h-screen bg-background">
@@ -138,6 +139,7 @@ export default function RecommendationsUI() {
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {filteredRecs.map((rec) => {
+                if (!rec.service) return null;
                 const displayName = rec.service.service_name || rec.service.name || "Service";
                 return (
                   <div key={rec.id} className="rounded-lg border p-4 hover:bg-muted/40 transition">
@@ -159,11 +161,15 @@ export default function RecommendationsUI() {
                         <p className="text-xs text-muted-foreground">{rec.service.provider}</p>
                       </div>
                     </div>
-                    <p className="text-sm text-muted-foreground line-clamp-2">{rec.service.description}</p>
+                    <p className="text-sm text-muted-foreground line-clamp-2">
+                      {rec.service.description || "No description available."}
+                    </p>
                     <div className="flex flex-wrap gap-2 mt-3">
-                      <Badge variant="outline" className="capitalize">
-                        {rec.service.category}
-                      </Badge>
+                      {rec.service.category && (
+                        <Badge variant="outline" className="capitalize">
+                          {rec.service.category}
+                        </Badge>
+                      )}
                       {rec.score !== null && (
                         <Badge variant="secondary">Score {rec.score.toFixed(2)}</Badge>
                       )}

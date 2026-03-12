@@ -41,6 +41,7 @@ type EfficiencyLogRow = {
 };
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+const toNumber = (value: number | null | undefined) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 
 export default function Analytics() {
   const { toast } = useToast();
@@ -97,13 +98,13 @@ export default function Analytics() {
   const analytics = useMemo(() => {
     const total = predictions.length;
     const avgEfficiency = total > 0
-      ? predictions.reduce((sum, p) => sum + Number(p.predicted_efficiency || 0), 0) / total
+      ? predictions.reduce((sum, p) => sum + toNumber(p.predicted_efficiency), 0) / total
       : 0;
     const avgLatency = total > 0
-      ? predictions.reduce((sum, p) => sum + Number(p.latency || 0), 0) / total
+      ? predictions.reduce((sum, p) => sum + toNumber(p.latency), 0) / total
       : 0;
     const avgThroughput = total > 0
-      ? predictions.reduce((sum, p) => sum + Number(p.throughput || 0), 0) / total
+      ? predictions.reduce((sum, p) => sum + toNumber(p.throughput), 0) / total
       : 0;
 
     const successCount = logs.filter((l) => l.status === "success").length;
@@ -118,7 +119,7 @@ export default function Analytics() {
         .reverse()
         .map((p) => ({
           time: format(new Date(p.created_at), "MM-dd HH:mm"),
-          efficiency: Number(p.predicted_efficiency || 0),
+          efficiency: toNumber(p.predicted_efficiency),
         })),
     [predictions],
   );
@@ -126,8 +127,8 @@ export default function Analytics() {
   const latencyVsEfficiencyData = useMemo(
     () =>
       predictions.map((p) => ({
-        latency: Number(p.latency || 0),
-        efficiency: Number(p.predicted_efficiency || 0),
+        latency: toNumber(p.latency),
+        efficiency: toNumber(p.predicted_efficiency),
       })),
     [predictions],
   );
@@ -139,8 +140,8 @@ export default function Analytics() {
         .slice(0, 12)
         .map((p, idx) => ({
           name: `P${idx + 1}`,
-          throughput: Number(p.throughput || 0),
-          efficiency: Number(p.predicted_efficiency || 0),
+          throughput: toNumber(p.throughput),
+          efficiency: toNumber(p.predicted_efficiency),
         })),
     [predictions],
   );
