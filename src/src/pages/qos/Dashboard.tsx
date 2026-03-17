@@ -324,6 +324,78 @@ export default function QosDashboard() {
           </Card>
         </motion.div>
 
+        <motion.div
+          className="grid gap-6 lg:grid-cols-3 mb-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
+        >
+          <Card className="shadow-medium lg:col-span-2 border border-border/70">
+            <CardHeader>
+              <CardTitle>Live Prediction Trend</CardTitle>
+              <CardDescription>Latest ML efficiency scores</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {predictionLoading ? (
+                <div className="py-8 text-center text-muted-foreground">Loading predictions...</div>
+              ) : predictionChartData.length === 0 ? (
+                <div className="py-8 text-center text-muted-foreground">No predictions yet.</div>
+              ) : (
+                <ChartContainer
+                  config={{
+                    efficiency: { label: "Efficiency (%)", color: "hsl(var(--primary))" },
+                  }}
+                  className="h-[260px]"
+                >
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={predictionChartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" fontSize={12} />
+                      <YAxis fontSize={12} domain={[0, 100]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="efficiency" stroke="hsl(var(--primary))" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-medium border border-border/70">
+            <CardHeader>
+              <CardTitle>Prediction Snapshot</CardTitle>
+              <CardDescription>Recent activity & average</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <p className="text-xs uppercase text-muted-foreground">Avg Efficiency</p>
+                <p className="text-3xl font-bold">{avgPrediction.toFixed(2)}%</p>
+              </div>
+              <div className="space-y-2">
+                {predictionLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading history...</p>
+                ) : predictions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No predictions yet.</p>
+                ) : (
+                  predictions.slice(0, 5).map((row) => (
+                    <div key={row.id} className="rounded-md border p-3">
+                      <p className="text-sm font-medium">
+                        {Number(row.predicted_efficiency).toFixed(2)}% efficiency
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {format(new Date(row.created_at), 'MMM dd, yyyy HH:mm')}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+              <Link to="/qos/predict">
+                <Button variant="secondary" className="w-full">View Prediction Page</Button>
+              </Link>
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* Real-Time Charts */}
         {tests.length > 0 && (
           <motion.div 
