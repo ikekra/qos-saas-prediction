@@ -1,70 +1,107 @@
-# Welcome to your Lovable project
+# QoS Efficiency Prediction Platform
 
-## Project info
+End-to-end system that trains a QoS efficiency model, serves predictions via a FastAPI ML service, and stores prediction history in Supabase with a React dashboard.
 
-**URL**: https://lovable.dev/projects/7c215f05-f4fb-49d5-907d-85f0b5c965c8
+**Tech Stack**
+- Frontend: Vite + React + TypeScript + Tailwind + shadcn-ui
+- Backend ML API: FastAPI
+- Database: Supabase
+- ML: scikit-learn
 
-## How can I edit this code?
+**Stable Demo Flow**
+1. Start the ML API.
+2. Start the frontend.
+3. Open the Predict page and enter QoS metrics.
+4. Get the predicted efficiency and see it stored in Supabase.
+5. Export prediction history to CSV.
 
-There are several ways of editing your application.
+## Setup
 
+**Prerequisites**
+- Node.js 18+
+- Python 3.10+ (3.12/3.13 supported)
 
+**Install frontend dependencies**
+```powershell
+cd "c:\Users\Asus\Desktop\saas-qos\New folder\source\src"
+npm install
+```
 
-**Use your preferred IDE**
+**Environment variables**
+Create or update `.env` in the same folder as `package.json`:
+```
+VITE_SUPABASE_PROJECT_ID="your_project_id"
+VITE_SUPABASE_URL="https://your-project.supabase.co"
+VITE_SUPABASE_PUBLISHABLE_KEY="your_anon_key"
+VITE_ML_API_URL=http://localhost:8000/predict
+```
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+## Run the ML API
+```powershell
+cd "c:\Users\Asus\Desktop\saas-qos\New folder\source\src"
+python -m pip install -r requirements.txt
+python ml_service.py
+```
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+## Run the Frontend
+```powershell
+cd "c:\Users\Asus\Desktop\saas-qos\New folder\source\src"
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Sample Prediction Request
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/predict" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"latency":120,"throughput":80,"availability":99.2,"reliability":98.9,"response_time":140}'
+```
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+## Model Training
 
-**Use GitHub Codespaces**
+**Generate dataset**
+```powershell
+python generate_qos_dataset.py
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+**Train a single model**
+```powershell
+python train_qos_model.py --data qos_dataset.csv
+```
+This produces:
+- `qos_model.pkl`
+- `scaler.pkl`
 
-## What technologies are used for this project?
+**Full evaluation pipeline with report**
+```powershell
+python train_qos_pipeline.py --data qos_dataset.csv
+```
+This produces:
+- `evaluation_report.json`
+- `evaluation_report.txt`
+- `best_model.pkl`
+- `scaler.pkl`
 
-This project is built with:
+## Model Evaluation (R2, MAE, RMSE)
+The latest metrics are saved to:
+- `evaluation_report.txt`
+- `evaluation_report.json`
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+You can include these metrics in your final report:
+- R2
+- MAE
+- RMSE
 
+## Export Predictions (CSV)
+Open the Predict page and click **Export CSV** to download the latest prediction history. The file opens in Excel.
 
+## Supabase Tables Used
+- `qos_predictions` stores prediction history
+- `efficiency_logs` stores API request logs (from the Supabase Edge function)
 
-
-
-
-
-
-
-
-
-
-
+## Screenshots
+Place your screenshots here and update this list:
+- `docs/screenshots/predict-page.png`
+- `docs/screenshots/history-table.png`
+- `docs/screenshots/export-csv.png`
