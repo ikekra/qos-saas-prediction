@@ -258,15 +258,17 @@ export default function QosDashboard() {
 
         {/* Stats Grid */}
         <motion.div 
-          className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8"
+          className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-10 mt-10"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.2 }}
         >
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Total Tests</CardTitle>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <BarChart3 className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{stats.totalTests}</div>
@@ -276,10 +278,12 @@ export default function QosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Avg Latency</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <Clock className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{stats.avgLatency.toFixed(2)}ms</div>
@@ -289,10 +293,12 @@ export default function QosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Avg Uptime</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <TrendingUp className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{stats.avgUptime.toFixed(2)}%</div>
@@ -302,10 +308,12 @@ export default function QosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
-              <Activity className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <Activity className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{stats.successRate.toFixed(2)}%</div>
