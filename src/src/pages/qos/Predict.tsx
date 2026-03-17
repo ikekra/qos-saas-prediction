@@ -3,7 +3,7 @@ import { Header } from "@/components/Header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Activity, TrendingUp, Gauge, History } from "lucide-react";
+import { Loader2, Activity, TrendingUp, Gauge, History, Sparkles, Download } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -247,20 +247,107 @@ export default function Predict() {
     message: `Predicted ${Number(row.predicted_efficiency).toFixed(2)}% efficiency`,
   }));
 
+  const exportHistoryCsv = () => {
+    if (!history.length) {
+      toast({
+        title: "Nothing to export",
+        description: "Run a prediction first to export history.",
+      });
+      return;
+    }
+
+    const headers = [
+      "created_at",
+      "service_id",
+      "latency",
+      "throughput",
+      "availability",
+      "reliability",
+      "response_time",
+      "predicted_efficiency",
+    ];
+
+    const escapeCell = (value: string | number | null | undefined) => {
+      const safe = value ?? "";
+      const stringValue = String(safe);
+      const escaped = stringValue.replace(/"/g, "\"\"");
+      return `"${escaped}"`;
+    };
+
+    const lines = [
+      headers.join(","),
+      ...history.map((row) =>
+        [
+          row.created_at,
+          row.service_id ?? "",
+          row.latency,
+          row.throughput,
+          row.availability,
+          row.reliability,
+          row.response_time,
+          row.predicted_efficiency,
+        ]
+          .map(escapeCell)
+          .join(","),
+      ),
+    ];
+
+    const csvContent = lines.join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `qos_predictions_${format(new Date(), "yyyyMMdd_HHmmss")}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
       <div className="container py-10 space-y-8 relative">
         <div className="pointer-events-none absolute inset-0 -z-10">
-          <div className="absolute -top-24 right-0 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
-          <div className="absolute top-40 -left-10 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
-          <div className="absolute bottom-10 right-10 h-80 w-80 rounded-full bg-primary/5 blur-3xl" />
+          <div className="absolute -top-24 right-0 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
+          <div className="absolute top-40 -left-10 h-80 w-80 rounded-full bg-accent/20 blur-3xl" />
+          <div className="absolute bottom-10 right-10 h-72 w-72 rounded-full bg-primary/10 blur-3xl" />
         </div>
-        <div>
-          <h1 className="text-4xl font-bold mb-2">QoS Efficiency Prediction</h1>
-          <p className="text-muted-foreground">
-            Send QoS metrics to the Supabase Edge Function and receive ML-based efficiency prediction.
-          </p>
+        <div className="relative overflow-hidden rounded-3xl p-8 md:p-12 hero-surface text-white">
+          <div className="absolute inset-0 hero-veil" />
+          <div className="absolute inset-0 opacity-30 pattern-dots" />
+          <div className="absolute -bottom-16 -right-10 h-56 w-56 rounded-full bg-white/10 blur-3xl" />
+          <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+            <div className="max-w-2xl space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em]">
+                <Sparkles className="h-3.5 w-3.5" />
+                ML Prediction Studio
+              </div>
+              <h1 className="text-4xl md:text-5xl font-semibold leading-tight">
+                QoS Efficiency Prediction
+              </h1>
+              <p className="text-white/80 text-base md:text-lg">
+                Submit QoS metrics to the ML API, store results in Supabase, and track trends in real time.
+              </p>
+              <div className="flex flex-wrap gap-3 text-sm text-white/80">
+                <span className="rounded-full bg-white/15 px-3 py-1">Prediction history</span>
+                <span className="rounded-full bg-white/15 px-3 py-1">Realtime trend</span>
+                <span className="rounded-full bg-white/15 px-3 py-1">CSV export</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-3">
+              <Button
+                onClick={exportHistoryCsv}
+                variant="secondary"
+                size="lg"
+                className="gap-2 shadow-soft"
+                disabled={loadingHistory || history.length === 0}
+              >
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+            </div>
+          </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
