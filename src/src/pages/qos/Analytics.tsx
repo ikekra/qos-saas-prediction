@@ -235,7 +235,7 @@ export default function Analytics() {
         </div>
 
         {predictions.length === 0 ? (
-          <Card className="metric-card">
+          <Card className="brand-card">
             <CardContent className="py-10 text-center text-muted-foreground">
               No predictions available yet. Generate a prediction to populate analytics.
             </CardContent>
@@ -245,6 +245,7 @@ export default function Analytics() {
           <DashboardCard
             title="Efficiency Trend Over Time"
             description="Efficiency score progression from recent predictions."
+            className="brand-card"
           >
             <div className="h-[320px]">
               <ChartContainer
@@ -269,6 +270,7 @@ export default function Analytics() {
           <DashboardCard
             title="Latency vs Efficiency"
             description="Relationship between latency and predicted efficiency."
+            className="brand-card"
           >
             <div className="h-[320px]">
               <ChartContainer
@@ -293,6 +295,7 @@ export default function Analytics() {
           <DashboardCard
             title="Throughput Comparison"
             description="Top throughput predictions with efficiency overlay."
+            className="brand-card"
           >
             <div className="h-[320px]">
               <ChartContainer
@@ -320,6 +323,7 @@ export default function Analytics() {
           <DashboardCard
             title="User Performance Metrics"
             description="Composite score view from prediction and log history."
+            className="brand-card"
           >
             <div className="h-[320px]">
               <ChartContainer
