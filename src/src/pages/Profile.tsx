@@ -366,7 +366,7 @@ export default function Profile() {
             </TabsContent>
 
             <TabsContent value="favorites">
-              <Card className="metric-card">
+              <Card className="brand-card">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Heart className="h-5 w-5" />
