@@ -346,7 +346,7 @@ export default function Reports() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.6 }}
           >
-            <Card className="shadow-medium">
+            <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Latency Trend</CardTitle>
                 <CardDescription>Response time over filtered results</CardDescription>
@@ -381,7 +381,7 @@ export default function Reports() {
               </CardContent>
             </Card>
 
-            <Card className="shadow-medium">
+            <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Performance Metrics</CardTitle>
                 <CardDescription>Comparison across test types</CardDescription>
@@ -414,7 +414,7 @@ export default function Reports() {
               </CardContent>
             </Card>
 
-            <Card className="shadow-medium lg:col-span-2">
+            <Card className="brand-card lg:col-span-2">
               <CardHeader>
                 <CardTitle>Test Type Distribution</CardTitle>
                 <CardDescription>Breakdown of tests by type</CardDescription>
@@ -453,7 +453,7 @@ export default function Reports() {
             </Card>
           </motion.div>
         ) : (
-          <Card className="shadow-medium">
+          <Card className="brand-card">
             <CardContent className="py-16 text-center">
               <p className="text-muted-foreground mb-4">No test results yet</p>
               <p className="text-sm text-muted-foreground">
@@ -470,7 +470,7 @@ export default function Reports() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.8 }}
           >
-            <Card className="shadow-medium">
+            <Card className="brand-card">
               <CardHeader>
                 <CardTitle>Filtered Test Results</CardTitle>
                 <CardDescription>Showing {filteredTests.length} results based on filters</CardDescription>
