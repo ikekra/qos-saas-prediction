@@ -10,10 +10,10 @@ type StatWidgetProps = {
 
 export function StatWidget({ label, value, icon, helper }: StatWidgetProps) {
   return (
-    <Card className="gradient-card shadow-soft">
+    <Card className="brand-card">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium flex items-center gap-2">
-          {icon}
+          {icon ? <span className="brand-icon h-8 w-8">{icon}</span> : null}
           {label}
         </CardTitle>
       </CardHeader>
