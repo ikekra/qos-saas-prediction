@@ -224,7 +224,7 @@ export default function Reports() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.2 }}
         >
-          <Card className="mb-8 shadow-medium">
+          <Card className="mb-8 brand-card">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Filter className="h-5 w-5" />
@@ -292,10 +292,12 @@ export default function Reports() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.4 }}
         >
-          <Card className="gradient-card shadow-soft hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Avg Latency</CardTitle>
-              <Clock className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <Clock className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{avgLatency}ms</div>
@@ -305,10 +307,12 @@ export default function Reports() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Avg Uptime</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <TrendingUp className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{avgUptime}%</div>
@@ -318,10 +322,12 @@ export default function Reports() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover-scale">
+          <Card className="brand-card">
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
-              <Activity className="h-4 w-4 text-muted-foreground" />
+              <div className="brand-icon">
+                <Activity className="h-4 w-4" />
+              </div>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{avgSuccessRate}%</div>
