@@ -478,6 +478,12 @@ export default function Predict() {
         <DashboardCard
           title="Prediction History"
           description="Recent predictions stored in Supabase (`qos_predictions`)."
+          className="brand-card"
+          action={
+            <Button variant="secondary" size="sm" onClick={exportHistoryCsv} disabled={loadingHistory || history.length === 0}>
+              Export CSV
+            </Button>
+          }
         >
             {loadingHistory ? (
               <div className="py-8 flex items-center justify-center text-muted-foreground">
