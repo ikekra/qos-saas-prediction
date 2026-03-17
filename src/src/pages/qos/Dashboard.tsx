@@ -462,7 +462,7 @@ export default function QosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Analytics Dashboard</CardTitle>
               <CardDescription>
