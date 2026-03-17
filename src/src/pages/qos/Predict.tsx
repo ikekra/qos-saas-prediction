@@ -376,6 +376,7 @@ export default function Predict() {
         <DashboardCard
           title="QoS Input Form"
           description="Provide service performance metrics to predict efficiency score."
+          className="brand-card"
         >
           <PredictionForm
             services={services}
@@ -395,7 +396,7 @@ export default function Predict() {
         )}
 
         {prediction && (
-          <Card className="shadow-soft">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Latest Prediction</CardTitle>
             </CardHeader>
@@ -411,7 +412,7 @@ export default function Predict() {
         )}
 
         <div className="grid gap-6 lg:grid-cols-3">
-          <Card className="shadow-medium lg:col-span-2">
+          <Card className="brand-card lg:col-span-2">
           <CardHeader>
             <CardTitle>Efficiency Trend</CardTitle>
             <CardDescription>Recent prediction scores over time.</CardDescription>
@@ -447,7 +448,7 @@ export default function Predict() {
           </CardContent>
         </Card>
 
-          <Card className="shadow-medium">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Recent Activity</CardTitle>
               <CardDescription>Latest prediction events.</CardDescription>
