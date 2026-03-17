@@ -298,7 +298,7 @@ export default function Profile() {
 
             <TabsContent value="activity">
               <div className="space-y-6">
-                <Card className="metric-card">
+                <Card className="brand-card">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <TestTube className="h-5 w-5" />
@@ -328,7 +328,7 @@ export default function Profile() {
                   </CardContent>
                 </Card>
 
-                <Card className="metric-card">
+                <Card className="brand-card">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Star className="h-5 w-5" />
