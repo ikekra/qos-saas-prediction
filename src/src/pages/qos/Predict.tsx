@@ -12,6 +12,9 @@ import { PredictionForm, PredictionFormValues } from "@/components/PredictionFor
 import { StatWidget } from "@/components/StatWidget";
 import { DashboardCard } from "@/components/DashboardCard";
 
+const ML_API_URL = (import.meta.env.VITE_ML_API_URL as string | undefined)?.trim();
+const ML_API_TIMEOUT_MS = 12000;
+
 type PredictionRow = {
   id: string;
   service_id?: string | null;
@@ -112,34 +115,108 @@ export default function Predict() {
     fetchServices();
   }, [toast]);
 
+  const callMlApi = async (values: PredictionFormValues) => {
+    if (!ML_API_URL) {
+      throw new Error("VITE_ML_API_URL is not configured.");
+    }
 
-  const handleSubmit = async (values: PredictionFormValues) => {
-    setSubmitting(true);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ML_API_TIMEOUT_MS);
 
     try {
-      const { data, error } = await supabase.functions.invoke("predict-qos", {
-        body: {
-          service_id: values.service_id ?? null,
+      const response = await fetch(ML_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
           latency: values.latency,
           throughput: values.throughput,
           availability: values.availability,
           reliability: values.reliability,
           response_time: values.response_time,
-        },
+        }),
+        signal: controller.signal,
       });
 
-      if (error) throw error;
-
-      if (!data?.prediction) {
-        throw new Error("Prediction response is missing.");
+      if (!response.ok) {
+        const details = await response.text().catch(() => "");
+        throw new Error(details || "ML API request failed.");
       }
 
-      setPrediction(data.prediction as PredictionRow);
-      toast({
-        title: "Prediction complete",
-        description: `Predicted efficiency: ${Number(data.prediction.predicted_efficiency).toFixed(2)}%`,
-      });
-      await fetchHistory();
+      const data = await response.json();
+      const predictedEfficiency = Number(data?.predicted_efficiency);
+      if (!Number.isFinite(predictedEfficiency)) {
+        throw new Error("ML API response missing predicted_efficiency.");
+      }
+
+      const localPrediction: PredictionRow = {
+        id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `local-${Date.now()}`,
+        service_id: values.service_id ?? null,
+        latency: values.latency,
+        throughput: values.throughput,
+        availability: values.availability,
+        reliability: values.reliability,
+        response_time: values.response_time,
+        predicted_efficiency: predictedEfficiency,
+        created_at: new Date().toISOString(),
+      };
+
+      return localPrediction;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const persistPrediction = async (predictionToSave: PredictionRow) => {
+    const { data, error } = await supabase
+      .from("qos_predictions")
+      .insert({
+        service_id: predictionToSave.service_id ?? null,
+        latency: predictionToSave.latency,
+        throughput: predictionToSave.throughput,
+        availability: predictionToSave.availability,
+        reliability: predictionToSave.reliability,
+        response_time: predictionToSave.response_time,
+        predicted_efficiency: predictionToSave.predicted_efficiency,
+      })
+      .select("id, latency, throughput, availability, reliability, response_time, predicted_efficiency, created_at")
+      .single();
+
+    if (error) throw error;
+    return data as PredictionRow;
+  };
+
+  const showPrediction = (row: PredictionRow, message: string) => {
+    setPrediction(row);
+    setHistory((prev) => [row, ...prev].slice(0, 20));
+    toast({
+      title: "Prediction complete",
+      description: message,
+    });
+  };
+
+  const handleSubmit = async (values: PredictionFormValues) => {
+    setSubmitting(true);
+
+    try {
+      const localPrediction = await callMlApi(values);
+      try {
+        const stored = await persistPrediction(localPrediction);
+        showPrediction(
+          stored,
+          `Predicted efficiency: ${Number(stored.predicted_efficiency).toFixed(2)}% (saved)`,
+        );
+        await fetchHistory();
+      } catch (storageError: any) {
+        showPrediction(
+          localPrediction,
+          `Predicted efficiency: ${Number(localPrediction.predicted_efficiency).toFixed(2)}% (not saved)`,
+        );
+        toast({
+          title: "Saved to history failed",
+          description: storageError.message || "Prediction was generated but not stored.",
+          variant: "destructive",
+        });
+      }
     } catch (error: any) {
       toast({
         title: "Prediction failed",
