@@ -500,7 +500,7 @@ export default function QosDashboard() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.6 }}
         >
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>Run Performance Test</CardTitle>
               <CardDescription>
@@ -517,7 +517,7 @@ export default function QosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>View Reports</CardTitle>
               <CardDescription>
@@ -551,7 +551,7 @@ export default function QosDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="gradient-card shadow-soft hover:shadow-medium transition-all duration-300 hover-scale">
+          <Card className="brand-card">
             <CardHeader>
               <CardTitle>AI-Driven Insights</CardTitle>
               <CardDescription>
