@@ -12,7 +12,7 @@ type AnalyticsWidgetProps = {
 
 export function AnalyticsWidget({ label, value, icon, hint, className }: AnalyticsWidgetProps) {
   return (
-    <Card className={cn("shadow-soft", className)}>
+    <Card className={cn("brand-card", className)}>
       <CardContent className="flex items-center justify-between gap-3 p-4">
         <div className="space-y-1">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
@@ -20,9 +20,7 @@ export function AnalyticsWidget({ label, value, icon, hint, className }: Analyti
           {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
         </div>
         {icon ? (
-          <div className="h-10 w-10 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-            {icon}
-          </div>
+          <div className="brand-icon h-10 w-10">{icon}</div>
         ) : null}
       </CardContent>
     </Card>
