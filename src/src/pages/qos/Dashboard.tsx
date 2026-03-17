@@ -4,7 +4,7 @@ import { Header } from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { supabase } from '@/integrations/supabase/client';
-import { BarChart3, Clock, TrendingUp, Activity, Play, AlertTriangle, Download } from 'lucide-react';
+import { BarChart3, Clock, TrendingUp, Activity, Play, AlertTriangle, Download, Sparkles } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { ChartContainer } from '@/components/ui/chart';
