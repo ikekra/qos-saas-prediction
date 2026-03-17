@@ -16,5 +16,5 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/auth/login" replace />;
   }
 
-  return <>{children}</>;
+  return <div className="post-login-theme">{children}</div>;
 }
