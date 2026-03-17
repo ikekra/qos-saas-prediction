@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { User, Mail, Building, Calendar, Heart, TestTube, Star } from 'lucide-react';
+import { User, Mail, Building, Calendar, Heart, TestTube, Star, Sparkles } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -183,32 +183,56 @@ export default function Profile() {
       <Header />
       <div className="container py-8 relative">
         <div className="pointer-events-none absolute inset-0 -z-10">
-          <div className="absolute -top-24 right-0 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
-          <div className="absolute top-40 -left-10 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
-          <div className="absolute bottom-10 right-10 h-80 w-80 rounded-full bg-primary/5 blur-3xl" />
+          <div className="absolute -top-24 right-0 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
+          <div className="absolute top-40 -left-10 h-80 w-80 rounded-full bg-accent/20 blur-3xl" />
+          <div className="absolute bottom-10 right-10 h-72 w-72 rounded-full bg-primary/10 blur-3xl" />
         </div>
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
         >
-          <h1 className="text-4xl font-bold mb-2">My Profile</h1>
-          <p className="text-muted-foreground mb-8">Manage your account and view your activity</p>
+          <div className="relative overflow-hidden rounded-3xl p-8 md:p-12 hero-surface text-white mb-8">
+            <div className="absolute inset-0 hero-veil" />
+            <div className="absolute inset-0 opacity-30 pattern-dots" />
+            <div className="absolute -bottom-16 -right-10 h-56 w-56 rounded-full bg-white/10 blur-3xl" />
+            <div className="relative z-10 flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+              <div className="max-w-2xl space-y-4">
+                <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em]">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Personal Workspace
+                </div>
+                <h1 className="text-4xl md:text-5xl font-semibold leading-tight">My Profile</h1>
+                <p className="text-white/80 text-base md:text-lg">
+                  Manage your identity, preferences, and QoS activity in one place.
+                </p>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="h-14 w-14 rounded-2xl bg-white/20 flex items-center justify-center text-xl font-semibold">
+                  {(profile?.name || 'U').trim().slice(0, 1).toUpperCase()}
+                </div>
+                <div>
+                  <p className="text-lg font-semibold">{profile?.name || 'User'}</p>
+                  <p className="text-sm text-white/80">{profile?.email || ''}</p>
+                </div>
+              </div>
+            </div>
+          </div>
           {banner && (
-            <Card className="metric-card mb-6 border-emerald-500/50">
+            <Card className="brand-card mb-6 border-emerald-500/50">
               <CardContent className="py-4 text-emerald-700">{banner}</CardContent>
             </Card>
           )}
 
           <Tabs defaultValue="profile" className="space-y-6">
-            <TabsList>
+            <TabsList className="bg-white/80 backdrop-blur-sm border border-border/70">
               <TabsTrigger value="profile">Profile Info</TabsTrigger>
               <TabsTrigger value="activity">Activity</TabsTrigger>
               <TabsTrigger value="favorites">Favorites</TabsTrigger>
             </TabsList>
 
             <TabsContent value="profile">
-              <Card className="metric-card">
+              <Card className="brand-card">
                 <CardHeader>
                   <CardTitle>Profile Information</CardTitle>
                   <CardDescription>Update your personal information</CardDescription>
