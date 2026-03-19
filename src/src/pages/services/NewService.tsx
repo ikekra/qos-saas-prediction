@@ -19,6 +19,7 @@ export default function NewService() {
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
+    provider: '',
     base_url: '',
     description: '',
     category: '',
@@ -31,10 +32,14 @@ export default function NewService() {
     try {
       const user = await requireUser();
 
-      const { error } = await supabase.from('services').insert({
-        ...formData,
-        created_by: user.id,
-        user_id: user.id,
+      const { error } = await supabase.functions.invoke('create-web-service', {
+        body: {
+          name: formData.name,
+          provider: formData.provider,
+          base_url: formData.base_url,
+          description: formData.description,
+          category: formData.category || 'Other',
+        },
       });
 
       if (error) throw error;
@@ -99,6 +104,18 @@ export default function NewService() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="provider">Provider *</Label>
+                  <Input
+                    id="provider"
+                    value={formData.provider}
+                    onChange={(e) =>
+                      setFormData({ ...formData, provider: e.target.value })
+                    }
+                    required
+                  />
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="base_url">Base URL *</Label>
                   <Input
                     id="base_url"
@@ -144,6 +161,7 @@ export default function NewService() {
                       setFormData({ ...formData, description: e.target.value })
                     }
                     rows={4}
+                    required
                   />
                 </div>
 
