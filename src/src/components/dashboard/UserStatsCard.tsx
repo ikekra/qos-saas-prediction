@@ -30,19 +30,22 @@ export function UserStatsCard() {
     try {
       // Fetch test results
       const { data: tests } = await supabase
-        .from('test_results')
+        .from('tests')
         .select('latency')
         .eq('user_id', user.id);
 
       // Fetch ratings
       const { data: ratings } = await supabase
-        .from('ratings')
+        .from('web_service_ratings')
         .select('id')
         .eq('user_id', user.id);
 
       const totalTests = tests?.length || 0;
-      const avgLatency = tests?.length
-        ? tests.reduce((acc, t) => acc + Number(t.latency || 0), 0) / tests.length
+      const latencyValues = (tests || [])
+        .map((t) => t.latency)
+        .filter((v): v is number => typeof v === 'number');
+      const avgLatency = latencyValues.length > 0
+        ? latencyValues.reduce((acc, v) => acc + v, 0) / latencyValues.length
         : 0;
 
       setStats({
@@ -58,6 +61,31 @@ export function UserStatsCard() {
   };
 
   const activityPercentage = Math.min((stats.totalTests / 50) * 100, 100);
+
+  useEffect(() => {
+    if (!user) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    channel = supabase
+      .channel(`user-stats-${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tests', filter: `user_id=eq.${user.id}` },
+        () => fetchUserStats(),
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'web_service_ratings', filter: `user_id=eq.${user.id}` },
+        () => fetchUserStats(),
+      )
+      .subscribe();
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [user]);
 
   return (
     <Card className="gradient-card shadow-medium">

@@ -8,7 +8,7 @@ import { Activity } from 'lucide-react';
 interface TestData {
   timestamp: string;
   latency: number;
-  error_rate: number;
+  success_rate: number;
 }
 
 export function LiveChart() {
@@ -25,8 +25,8 @@ export function LiveChart() {
 
     try {
       const { data: tests } = await supabase
-        .from('test_results')
-        .select('created_at, latency, error_rate')
+        .from('tests')
+        .select('created_at, latency, success_rate')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(10);
@@ -40,7 +40,7 @@ export function LiveChart() {
               minute: '2-digit',
             }),
             latency: Number(t.latency || 0),
-            error_rate: Number(t.error_rate || 0),
+            success_rate: Number(t.success_rate || 0),
           }));
         setData(chartData);
       }
@@ -50,6 +50,42 @@ export function LiveChart() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!user) return;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    channel = supabase
+      .channel(`live-chart-tests-${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'tests',
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          const row = payload.new as { created_at: string; latency: number | null; success_rate: number | null };
+          const next = {
+            timestamp: new Date(row.created_at).toLocaleTimeString('en-US', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+            latency: Number(row.latency ?? 0),
+            success_rate: Number(row.success_rate ?? 0),
+          };
+          setData((prev) => [...prev, next].slice(-10));
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [user]);
 
   return (
     <Card className="gradient-card shadow-medium">
@@ -93,11 +129,11 @@ export function LiveChart() {
               />
               <Line
                 type="monotone"
-                dataKey="error_rate"
+                dataKey="success_rate"
                 stroke="hsl(var(--destructive))"
                 strokeWidth={2}
                 dot={{ fill: 'hsl(var(--destructive))' }}
-                name="Error Rate (%)"
+                name="Success Rate (%)"
               />
             </LineChart>
           </ResponsiveContainer>
