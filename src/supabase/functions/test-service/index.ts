@@ -47,7 +47,7 @@ serve(async (req) => {
     }
 
     const { data: service, error: serviceError } = await supabaseClient
-      .from("services")
+      .from("web_services")
       .select("*")
       .eq("id", serviceId)
       .single();
@@ -61,12 +61,20 @@ serve(async (req) => {
 
     const results = [];
 
+    const serviceUrl = service.base_url || service.docs_url;
+    if (!serviceUrl) {
+      return new Response(JSON.stringify({ error: "Service URL not available" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     for (let i = 0; i < Math.min(runCount, 10); i++) {
       const startTime = Date.now();
       let latency = 0;
-      let throughput = 0;
-      let errorRate = 0;
-      let successRate = 100;
+      let throughput: number | null = null;
+      let uptime: number | null = null;
+      let successRate: number | null = null;
       let status = "completed";
 
       try {
@@ -76,14 +84,14 @@ serve(async (req) => {
 
         // latency & load test
         if (testType === "latency" || testType === "load") {
-          const response = await fetch(service.base_url, {
+          const response = await fetch(serviceUrl, {
             method: "GET",
             signal: controller.signal,
           });
 
           latency = Date.now() - startTime;
           successRate = response.ok ? 100 : 0;
-          errorRate = response.ok ? 0 : 100;
+          uptime = response.ok ? 100 : 0;
         }
 
         // throughput test
@@ -94,7 +102,7 @@ serve(async (req) => {
           const requests = Array(3)
             .fill(null)
             .map(() =>
-              fetch(service.base_url, {
+              fetch(serviceUrl, {
                 method: "GET",
                 signal: controller.signal,
               })
@@ -106,32 +114,45 @@ serve(async (req) => {
 
           const successCount = responses.filter((r) => r.ok).length;
           successRate = (successCount / 3) * 100;
-          errorRate = 100 - successRate;
+          uptime = successRate;
 
           const text = await responses[0].text();
           const sizeBytes = new TextEncoder().encode(text).length;
           const sizeKB = sizeBytes / 1024;
 
           const timeSec = (latency * 3) / 1000;
-          throughput = sizeKB / timeSec;
+          throughput = timeSec > 0 ? sizeKB / timeSec : 0;
+        }
+
+        if (testType === "uptime") {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000);
+          const response = await fetch(serviceUrl, {
+            method: "HEAD",
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          latency = Date.now() - startTime;
+          successRate = response.ok ? 100 : 0;
+          uptime = successRate;
         }
       } catch (err) {
         latency = Date.now() - startTime;
         successRate = 0;
-        errorRate = 100;
+        uptime = 0;
         status = "failed";
       }
 
       const { data: testResult } = await supabaseClient
-        .from("test_results")
+        .from("tests")
         .insert({
-          service_id: serviceId,
           user_id: user.id,
+          service_url: serviceUrl,
           test_type: testType,
           latency: Math.round(latency),
-          throughput: Math.round(throughput * 100) / 100,
-          error_rate: Math.round(errorRate),
-          success_rate: Math.round(successRate),
+          throughput: throughput === null ? null : Math.round(throughput * 100) / 100,
+          uptime: uptime === null ? null : Math.round(uptime),
+          success_rate: successRate === null ? null : Math.round(successRate),
           status,
         })
         .select()
@@ -144,10 +165,10 @@ serve(async (req) => {
       results.reduce((a, b) => a + b.latency, 0) / results.length;
     const avgThroughput =
       results.reduce((a, b) => a + (b.throughput || 0), 0) / results.length;
-    const avgErrorRate =
-      results.reduce((a, b) => a + b.error_rate, 0) / results.length;
     const avgSuccessRate =
-      results.reduce((a, b) => a + b.success_rate, 0) / results.length;
+      results.reduce((a, b) => a + (b.success_rate || 0), 0) / results.length;
+    const avgUptime =
+      results.reduce((a, b) => a + (b.uptime || 0), 0) / results.length;
 
     return new Response(
       JSON.stringify({
@@ -156,12 +177,12 @@ serve(async (req) => {
         aggregate: {
           latency: Math.round(avgLatency),
           throughput: Math.round(avgThroughput * 100) / 100,
-          errorRate: Math.round(avgErrorRate),
           successRate: Math.round(avgSuccessRate),
+          uptime: Math.round(avgUptime),
         },
         service: {
           id: service.id,
-          name: service.name,
+          name: service.service_name || service.name,
         },
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
