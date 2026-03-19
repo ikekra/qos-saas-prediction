@@ -68,11 +68,16 @@ serve(async (req) => {
     console.log(`Running ${testType} test for ${serviceUrl}`);
 
     // Perform the actual test based on type
-    let testResults = {
-      latency: 0,
-      uptime: 0,
-      throughput: 0,
-      success_rate: 0,
+    let testResults: {
+      latency: number | null;
+      uptime: number | null;
+      throughput: number | null;
+      success_rate: number | null;
+    } = {
+      latency: null,
+      uptime: null,
+      throughput: null,
+      success_rate: null,
     };
 
     const startTime = Date.now();
@@ -98,7 +103,7 @@ serve(async (req) => {
           const sizeInBytes = new TextEncoder().encode(responseText).length;
           const sizeInKB = sizeInBytes / 1024;
           const timeInSeconds = latency / 1000;
-          testResults.throughput = sizeInKB / timeInSeconds; // KB/s
+          testResults.throughput = timeInSeconds > 0 ? sizeInKB / timeInSeconds : 0; // KB/s
         }
       }
 
@@ -143,21 +148,28 @@ serve(async (req) => {
     }
 
     const predictedEfficiency = computePredictedEfficiency({
-      latency: testResults.latency || 0,
-      throughput: testResults.throughput || 0,
-      availability: testResults.uptime || 0,
-      reliability: testResults.success_rate || 0,
+      latency: testResults.latency ?? 0,
+      throughput: testResults.throughput ?? 0,
+      availability: testResults.uptime ?? 0,
+      reliability: testResults.success_rate ?? 0,
     });
+
+    const { data: matchedService } = await supabaseClient
+      .from('web_services')
+      .select('id')
+      .or(`base_url.eq.${serviceUrl},docs_url.eq.${serviceUrl}`)
+      .maybeSingle();
 
     const { error: predictionInsertError } = await supabaseClient
       .from('qos_predictions')
       .insert({
         user_id: user.id,
-        latency: testResults.latency || 0,
-        throughput: testResults.throughput || 0,
-        availability: testResults.uptime || 0,
-        reliability: testResults.success_rate || 0,
-        response_time: testResults.latency || 0,
+        service_id: matchedService?.id ?? null,
+        latency: testResults.latency ?? 0,
+        throughput: testResults.throughput ?? 0,
+        availability: testResults.uptime ?? 0,
+        reliability: testResults.success_rate ?? 0,
+        response_time: testResults.latency ?? 0,
         predicted_efficiency: predictedEfficiency,
       });
 
@@ -166,28 +178,18 @@ serve(async (req) => {
       throw predictionInsertError;
     }
 
-    const { data: ownedService } = await supabaseClient
-      .from('services')
-      .select('id')
-      .eq('base_url', serviceUrl)
-      .eq('created_by', user.id)
-      .maybeSingle();
-
-    if (ownedService?.id) {
+    if (matchedService?.id) {
       const { error: serviceUpdateError } = await supabaseClient
-        .from('services')
+        .from('web_services')
         .update({
-          user_id: user.id,
-          latency: testResults.latency || 0,
-          throughput: testResults.throughput || 0,
-          availability: testResults.uptime || 0,
-          reliability: testResults.success_rate || 0,
-          response_time: testResults.latency || 0,
+          avg_latency: testResults.latency ?? 0,
+          availability_score: testResults.uptime ?? 0,
+          reliability_score: testResults.success_rate ?? 0,
         })
-        .eq('id', ownedService.id);
+        .eq('id', matchedService.id);
 
       if (serviceUpdateError) {
-        console.error('services update error:', serviceUpdateError);
+        console.error('web_services update error:', serviceUpdateError);
       }
     }
 
