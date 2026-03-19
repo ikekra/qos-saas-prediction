@@ -9,6 +9,7 @@ const corsHeaders = {
 const sampleServices = [
   {
     name: 'Postman Echo API',
+    provider: 'Postman',
     category: 'API',
     base_url: 'https://postman-echo.com/get',
     description: 'A simple API testing service that echoes the data sent to it',
@@ -16,6 +17,7 @@ const sampleServices = [
   },
   {
     name: 'JSONPlaceholder',
+    provider: 'JSONPlaceholder',
     category: 'API',
     base_url: 'https://jsonplaceholder.typicode.com/posts/1',
     description: 'Free fake API for testing and prototyping',
@@ -23,6 +25,7 @@ const sampleServices = [
   },
   {
     name: 'Cloudflare CDN',
+    provider: 'Cloudflare',
     category: 'CDN',
     base_url: 'https://cloudflare.com',
     description: 'Global content delivery network and DDoS protection',
@@ -30,6 +33,7 @@ const sampleServices = [
   },
   {
     name: 'GitHub API',
+    provider: 'GitHub',
     category: 'API',
     base_url: 'https://api.github.com',
     description: 'Access GitHub data through their REST API',
@@ -37,6 +41,7 @@ const sampleServices = [
   },
   {
     name: 'Supabase Storage',
+    provider: 'Supabase',
     category: 'Storage',
     base_url: 'https://supabase.com',
     description: 'Open source Firebase alternative with PostgreSQL',
@@ -44,6 +49,7 @@ const sampleServices = [
   },
   {
     name: 'Auth0 Authentication',
+    provider: 'Auth0',
     category: 'Auth',
     base_url: 'https://auth0.com',
     description: 'Flexible authentication and authorization platform',
@@ -51,6 +57,7 @@ const sampleServices = [
   },
   {
     name: 'Vercel Edge Network',
+    provider: 'Vercel',
     category: 'CDN',
     base_url: 'https://vercel.com',
     description: 'Global edge network for fast deployments',
@@ -58,6 +65,7 @@ const sampleServices = [
   },
   {
     name: 'Stripe API',
+    provider: 'Stripe',
     category: 'API',
     base_url: 'https://api.stripe.com',
     description: 'Payment processing API for online businesses',
@@ -78,7 +86,7 @@ serve(async (req) => {
 
     // Check if services already exist
     const { data: existingServices, error: checkError } = await supabaseClient
-      .from('services')
+      .from('web_services')
       .select('name')
       .limit(1);
 
@@ -91,8 +99,12 @@ serve(async (req) => {
       console.log('Seeding sample services...');
 
       const { data, error } = await supabaseClient
-        .from('services')
-        .insert(sampleServices)
+        .from('web_services')
+        .insert(sampleServices.map((service) => ({
+          ...service,
+          service_name: service.name,
+          is_active: true,
+        })))
         .select();
 
       if (error) {
