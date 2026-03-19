@@ -33,7 +33,7 @@ serve(async (req) => {
 
     // Fetch services data
     const { data: services, error: servicesError } = await supabaseClient
-      .from('services')
+      .from('web_services')
       .select('*')
       .in('id', serviceIds);
 
@@ -46,17 +46,19 @@ serve(async (req) => {
       );
     }
 
-    // Fetch recent test results for each service
-    const testResultsPromises = serviceIds.map(async (serviceId: string) => {
+    // Fetch recent test results for each service (match by base_url)
+    const testResultsPromises = services.map(async (service: any) => {
+      const serviceUrl = service.base_url || service.docs_url;
+      if (!serviceUrl) return { serviceId: service.id, tests: [] };
       const { data, error } = await supabaseClient
-        .from('test_results')
-        .select('latency, throughput, error_rate, success_rate, created_at')
-        .eq('service_id', serviceId)
+        .from('tests')
+        .select('latency, throughput, uptime, success_rate, created_at, service_url')
+        .eq('service_url', serviceUrl)
         .order('created_at', { ascending: false })
         .limit(10);
 
       if (error) throw error;
-      return { serviceId, tests: data || [] };
+      return { serviceId: service.id, tests: data || [] };
     });
 
     const testResults = await Promise.all(testResultsPromises);
@@ -67,23 +69,25 @@ serve(async (req) => {
       
       const avgLatency = tests.length > 0
         ? tests.reduce((sum: number, t: any) => sum + (t.latency || 0), 0) / tests.length
-        : service.avg_latency || 0;
+        : service.avg_latency || service.base_latency_estimate || 0;
 
       const avgThroughput = tests.length > 0
         ? tests.reduce((sum: number, t: any) => sum + (t.throughput || 0), 0) / tests.length
-        : 0;
-
-      const avgErrorRate = tests.length > 0
-        ? tests.reduce((sum: number, t: any) => sum + (t.error_rate || 0), 0) / tests.length
         : 0;
 
       const avgSuccessRate = tests.length > 0
         ? tests.reduce((sum: number, t: any) => sum + (t.success_rate || 0), 0) / tests.length
         : 100;
 
+      const avgUptime = tests.length > 0
+        ? tests.reduce((sum: number, t: any) => sum + (t.uptime || 0), 0) / tests.length
+        : service.availability_score || 0;
+
+      const avgErrorRate = 100 - avgSuccessRate;
+
       return {
         id: service.id,
-        name: service.name,
+        name: service.service_name || service.name,
         category: service.category,
         description: service.description,
         avg_rating: service.avg_rating || 0,
@@ -93,7 +97,7 @@ serve(async (req) => {
           throughput: Math.round(avgThroughput * 100) / 100,
           errorRate: Math.round(avgErrorRate * 100) / 100,
           successRate: Math.round(avgSuccessRate * 100) / 100,
-          uptime: 100 - avgErrorRate,
+          uptime: Math.round(avgUptime * 100) / 100,
         },
         recentTests: tests.length,
       };
