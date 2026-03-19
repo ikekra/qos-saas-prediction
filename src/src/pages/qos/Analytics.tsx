@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "@/components/Header";
 import { Card, CardContent } from "@/components/ui/card";
 import { supabase } from "@/integrations/supabase/client";
@@ -7,6 +7,7 @@ import { Loader2, Activity, Gauge, Timer, TrendingUp, Sparkles } from "lucide-re
 import { ChartContainer } from "@/components/ui/chart";
 import { DashboardCard } from "@/components/DashboardCard";
 import { AnalyticsWidget } from "@/components/AnalyticsWidget";
+import { Badge } from "@/components/ui/badge";
 import {
   Bar,
   BarChart,
@@ -41,7 +42,12 @@ type EfficiencyLogRow = {
 };
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
-const toNumber = (value: number | null | undefined) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+const toNumber = (value: number | null | undefined) => (Number.isFinite(Number(value)) ? Number(value) : null);
+const avg = (values: Array<number | null | undefined>) => {
+  const valid = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (valid.length === 0) return null;
+  return valid.reduce((sum, v) => sum + v, 0) / valid.length;
+};
 
 export default function Analytics() {
   const { toast } = useToast();
@@ -49,6 +55,11 @@ export default function Analytics() {
   const [error, setError] = useState<string | null>(null);
   const [predictions, setPredictions] = useState<PredictionRow[]>([]);
   const [logs, setLogs] = useState<EfficiencyLogRow[]>([]);
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -95,20 +106,87 @@ export default function Analytics() {
     fetchData();
   }, [toast]);
 
+  useEffect(() => {
+    let active = true;
+
+    const scheduleRetry = () => {
+      const attempt = Math.min(retryRef.current + 1, 5);
+      retryRef.current = attempt;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => startSubscription(), delay);
+    };
+
+    const startSubscription = async () => {
+      const { data } = await supabase.auth.getUser();
+      if (!data.user || !active) return;
+
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+
+      const channel = supabase
+        .channel(`analytics-realtime-${data.user.id}`)
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'qos_predictions', filter: `user_id=eq.${data.user.id}` },
+          () => {
+            // refresh predictions
+            supabase
+              .from("qos_predictions")
+              .select("id, latency, throughput, availability, reliability, response_time, predicted_efficiency, created_at")
+              .order("created_at", { ascending: false })
+              .limit(200)
+              .then(({ data }) => {
+                if (data && active) setPredictions(data as PredictionRow[]);
+              });
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+
+      channelRef.current = channel;
+    };
+
+    startSubscription();
+
+    return () => {
+      active = false;
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [toast]);
+
   const analytics = useMemo(() => {
     const total = predictions.length;
-    const avgEfficiency = total > 0
-      ? predictions.reduce((sum, p) => sum + toNumber(p.predicted_efficiency), 0) / total
-      : 0;
-    const avgLatency = total > 0
-      ? predictions.reduce((sum, p) => sum + toNumber(p.latency), 0) / total
-      : 0;
-    const avgThroughput = total > 0
-      ? predictions.reduce((sum, p) => sum + toNumber(p.throughput), 0) / total
-      : 0;
+    const avgEfficiency = avg(predictions.map((p) => toNumber(p.predicted_efficiency)));
+    const avgLatency = avg(predictions.map((p) => toNumber(p.latency)));
+    const avgThroughput = avg(predictions.map((p) => toNumber(p.throughput)));
 
     const successCount = logs.filter((l) => l.status === "success").length;
-    const successRate = logs.length > 0 ? (successCount / logs.length) * 100 : 100;
+    const successRate = logs.length > 0 ? (successCount / logs.length) * 100 : null;
 
     return { total, avgEfficiency, avgLatency, avgThroughput, successRate };
   }, [predictions, logs]);
@@ -119,7 +197,7 @@ export default function Analytics() {
         .reverse()
         .map((p) => ({
           time: format(new Date(p.created_at), "MM-dd HH:mm"),
-          efficiency: toNumber(p.predicted_efficiency),
+          efficiency: toNumber(p.predicted_efficiency) ?? 0,
         })),
     [predictions],
   );
@@ -127,8 +205,8 @@ export default function Analytics() {
   const latencyVsEfficiencyData = useMemo(
     () =>
       predictions.map((p) => ({
-        latency: toNumber(p.latency),
-        efficiency: toNumber(p.predicted_efficiency),
+        latency: toNumber(p.latency) ?? 0,
+        efficiency: toNumber(p.predicted_efficiency) ?? 0,
       })),
     [predictions],
   );
@@ -140,18 +218,18 @@ export default function Analytics() {
         .slice(0, 12)
         .map((p, idx) => ({
           name: `P${idx + 1}`,
-          throughput: toNumber(p.throughput),
-          efficiency: toNumber(p.predicted_efficiency),
+          throughput: toNumber(p.throughput) ?? 0,
+          efficiency: toNumber(p.predicted_efficiency) ?? 0,
         })),
     [predictions],
   );
 
   const userPerformanceData = useMemo(
     () => [
-      { metric: "Efficiency", score: clamp(analytics.avgEfficiency, 0, 100) },
-      { metric: "Success Rate", score: clamp(analytics.successRate, 0, 100) },
-      { metric: "Latency Score", score: clamp(100 - analytics.avgLatency / 10, 0, 100) },
-      { metric: "Throughput Score", score: clamp((analytics.avgThroughput / 250) * 100, 0, 100) },
+      { metric: "Efficiency", score: clamp(analytics.avgEfficiency ?? 0, 0, 100) },
+      { metric: "Success Rate", score: clamp(analytics.successRate ?? 0, 0, 100) },
+      { metric: "Latency Score", score: clamp(100 - (analytics.avgLatency ?? 0) / 10, 0, 100) },
+      { metric: "Throughput Score", score: clamp(((analytics.avgThroughput ?? 0) / 250) * 100, 0, 100) },
     ],
     [analytics],
   );
@@ -223,15 +301,22 @@ export default function Analytics() {
                 <span className="rounded-full bg-white/15 px-3 py-1">Latency correlation</span>
                 <span className="rounded-full bg-white/15 px-3 py-1">Throughput ranking</span>
               </div>
+              <Badge variant="secondary" className="self-start">
+                {realtimeStatus === 'connected'
+                  ? 'Realtime: Connected'
+                  : realtimeStatus === 'reconnecting'
+                    ? 'Realtime: Reconnecting'
+                    : 'Realtime: Disconnected'}
+              </Badge>
             </div>
           </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <AnalyticsWidget label="Total Predictions" value={String(analytics.total)} icon={<Activity className="h-4 w-4" />} />
-          <AnalyticsWidget label="Avg Efficiency" value={`${analytics.avgEfficiency.toFixed(2)}%`} icon={<Gauge className="h-4 w-4" />} />
-          <AnalyticsWidget label="Avg Latency" value={`${analytics.avgLatency.toFixed(2)}ms`} icon={<Timer className="h-4 w-4" />} />
-          <AnalyticsWidget label="Success Rate" value={`${analytics.successRate.toFixed(2)}%`} icon={<TrendingUp className="h-4 w-4" />} />
+          <AnalyticsWidget label="Avg Efficiency" value={analytics.avgEfficiency === null ? "N/A" : `${analytics.avgEfficiency.toFixed(2)}%`} icon={<Gauge className="h-4 w-4" />} />
+          <AnalyticsWidget label="Avg Latency" value={analytics.avgLatency === null ? "N/A" : `${analytics.avgLatency.toFixed(2)}ms`} icon={<Timer className="h-4 w-4" />} />
+          <AnalyticsWidget label="Success Rate" value={analytics.successRate === null ? "N/A" : `${analytics.successRate.toFixed(2)}%`} icon={<TrendingUp className="h-4 w-4" />} />
         </div>
 
         {predictions.length === 0 ? (

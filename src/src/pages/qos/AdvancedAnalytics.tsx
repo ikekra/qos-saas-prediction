@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "@/components/Header";
 import { DashboardCard } from "@/components/DashboardCard";
 import { StatWidget } from "@/components/StatWidget";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { format, subDays } from "date-fns";
 import {
   Bar,
@@ -55,7 +56,12 @@ type ServiceScore = {
   avg_throughput: number;
 };
 
-const toNumber = (value: number | null | undefined) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+const toNumber = (value: number | null | undefined) => (Number.isFinite(Number(value)) ? Number(value) : null);
+const avg = (values: Array<number | null | undefined>) => {
+  const valid = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  if (valid.length === 0) return null;
+  return valid.reduce((sum, v) => sum + v, 0) / valid.length;
+};
 
 const getBinIndex = (value: number, bins: number[]) => {
   const idx = bins.findIndex((b, i) => value >= b && value < bins[i + 1]);
@@ -71,6 +77,11 @@ export default function AdvancedAnalytics() {
   const [dateFrom, setDateFrom] = useState(format(subDays(new Date(), 14), "yyyy-MM-dd"));
   const [dateTo, setDateTo] = useState(format(new Date(), "yyyy-MM-dd"));
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
   const setRange = (days: number) => {
     const now = new Date();
     setDateTo(format(now, "yyyy-MM-dd"));
@@ -111,6 +122,78 @@ export default function AdvancedAnalytics() {
     fetchData();
   }, [toast]);
 
+  useEffect(() => {
+    let active = true;
+
+    const scheduleRetry = () => {
+      const attempt = Math.min(retryRef.current + 1, 5);
+      retryRef.current = attempt;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => startSubscription(), delay);
+    };
+
+    const startSubscription = async () => {
+      const { data } = await supabase.auth.getUser();
+      if (!data.user || !active) return;
+
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+
+      const channel = supabase
+        .channel(`advanced-analytics-${data.user.id}`)
+        .on(
+          'postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'qos_predictions', filter: `user_id=eq.${data.user.id}` },
+          () => {
+            supabase
+              .from("qos_predictions")
+              .select("id, service_id, latency, throughput, availability, reliability, response_time, predicted_efficiency, created_at")
+              .order("created_at", { ascending: false })
+              .limit(300)
+              .then(({ data }) => {
+                if (data && active) setPredictions(data as PredictionRow[]);
+              });
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+
+      channelRef.current = channel;
+    };
+
+    startSubscription();
+
+    return () => {
+      active = false;
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [toast]);
+
   const filteredPredictions = useMemo(() => {
     const start = new Date(`${dateFrom}T00:00:00`);
     const end = new Date(`${dateTo}T23:59:59`);
@@ -135,26 +218,23 @@ export default function AdvancedAnalytics() {
 
     const scores: ServiceScore[] = filteredServices.map((service) => {
       const rows = byService[service.id] || [];
-      const avgEfficiency =
-        rows.length > 0
-          ? rows.reduce((sum, r) => sum + toNumber(r.predicted_efficiency), 0) / rows.length
-          : toNumber(service.availability_score);
-      const avgLatency =
-        rows.length > 0
-          ? rows.reduce((sum, r) => sum + toNumber(r.latency), 0) / rows.length
-          : toNumber(service.base_latency_estimate);
-      const avgThroughput =
-        rows.length > 0
-          ? rows.reduce((sum, r) => sum + toNumber(r.throughput), 0) / rows.length
-          : 0;
+      const avgEfficiency = rows.length > 0
+        ? avg(rows.map((r) => toNumber(r.predicted_efficiency)))
+        : toNumber(service.availability_score);
+      const avgLatency = rows.length > 0
+        ? avg(rows.map((r) => toNumber(r.latency)))
+        : toNumber(service.base_latency_estimate);
+      const avgThroughput = rows.length > 0
+        ? avg(rows.map((r) => toNumber(r.throughput)))
+        : null;
 
       return {
         id: service.id,
         name: service.name,
         provider: service.provider,
-        avg_efficiency: avgEfficiency,
-        avg_latency: avgLatency,
-        avg_throughput: avgThroughput,
+        avg_efficiency: avgEfficiency ?? 0,
+        avg_latency: avgLatency ?? 0,
+        avg_throughput: avgThroughput ?? 0,
       };
     });
 
@@ -189,8 +269,8 @@ export default function AdvancedAnalytics() {
     const buckets: Record<string, number> = {};
 
     filteredPredictions.forEach((p) => {
-      const latencyValue = toNumber(p.latency);
-      const efficiencyValue = toNumber(p.predicted_efficiency);
+      const latencyValue = toNumber(p.latency) ?? 0;
+      const efficiencyValue = toNumber(p.predicted_efficiency) ?? 0;
       const latIdx = getBinIndex(latencyValue, latencyBins);
       const effIdx = getBinIndex(efficiencyValue, efficiencyBins);
       const key = `${latIdx}-${effIdx}`;
@@ -208,10 +288,7 @@ export default function AdvancedAnalytics() {
   }, [filteredPredictions]);
 
   const totalPredictions = filteredPredictions.length;
-  const avgEfficiency =
-    totalPredictions > 0
-      ? filteredPredictions.reduce((sum, p) => sum + toNumber(p.predicted_efficiency), 0) / totalPredictions
-      : 0;
+  const avgEfficiency = avg(filteredPredictions.map((p) => toNumber(p.predicted_efficiency)));
 
   const exportTableToCsv = () => {
     if (serviceScores.length === 0) return;
@@ -296,11 +373,20 @@ export default function AdvancedAnalytics() {
           <p className="text-muted-foreground">
             Deep insights into service performance and user prediction trends.
           </p>
+          <div className="mt-3">
+            <Badge variant="secondary">
+              {realtimeStatus === 'connected'
+                ? 'Realtime: Connected'
+                : realtimeStatus === 'reconnecting'
+                  ? 'Realtime: Reconnecting'
+                  : 'Realtime: Disconnected'}
+            </Badge>
+          </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <StatWidget label="Predictions" value={String(totalPredictions)} icon={<Activity className="h-4 w-4" />} />
-          <StatWidget label="Avg Efficiency" value={`${avgEfficiency.toFixed(2)}%`} icon={<TrendingUp className="h-4 w-4" />} />
+          <StatWidget label="Avg Efficiency" value={avgEfficiency === null ? "N/A" : `${avgEfficiency.toFixed(2)}%`} icon={<TrendingUp className="h-4 w-4" />} />
           <StatWidget label="Top Services" value={String(topServices.length)} icon={<Flame className="h-4 w-4" />} />
           <StatWidget label="Latency Alerts" value={String(worstLatency.length)} icon={<AlertTriangle className="h-4 w-4" />} />
         </div>

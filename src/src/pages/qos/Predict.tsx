@@ -229,18 +229,21 @@ export default function Predict() {
   };
 
   const totalPredictions = history.length;
-  const avgEfficiency =
-    totalPredictions > 0
-      ? history.reduce((sum, row) => sum + Number(row.predicted_efficiency || 0), 0) / totalPredictions
-      : 0;
-  const bestEfficiency =
-    totalPredictions > 0
-      ? Math.max(...history.map((row) => Number(row.predicted_efficiency || 0)))
-      : 0;
-  const avgLatency =
-    totalPredictions > 0
-      ? history.reduce((sum, row) => sum + Number(row.latency || 0), 0) / totalPredictions
-      : 0;
+  const efficiencyValues = history
+    .map((row) => Number(row.predicted_efficiency))
+    .filter((value) => Number.isFinite(value));
+  const latencyValues = history
+    .map((row) => Number(row.latency))
+    .filter((value) => Number.isFinite(value));
+  const avgEfficiency = efficiencyValues.length > 0
+    ? efficiencyValues.reduce((sum, v) => sum + v, 0) / efficiencyValues.length
+    : null;
+  const bestEfficiency = efficiencyValues.length > 0
+    ? Math.max(...efficiencyValues)
+    : null;
+  const avgLatency = latencyValues.length > 0
+    ? latencyValues.reduce((sum, v) => sum + v, 0) / latencyValues.length
+    : null;
   const recentActivity = history.slice(0, 5).map((row) => ({
     id: row.id,
     time: format(new Date(row.created_at), "MMM dd, yyyy HH:mm"),
@@ -358,17 +361,17 @@ export default function Predict() {
           />
           <StatWidget
             label="Avg Efficiency"
-            value={loadingHistory ? "-" : `${avgEfficiency.toFixed(2)}%`}
+            value={loadingHistory ? "-" : avgEfficiency === null ? "N/A" : `${avgEfficiency.toFixed(2)}%`}
             icon={<TrendingUp className="h-4 w-4" />}
           />
           <StatWidget
             label="Best Efficiency"
-            value={loadingHistory ? "-" : `${bestEfficiency.toFixed(2)}%`}
+            value={loadingHistory ? "-" : bestEfficiency === null ? "N/A" : `${bestEfficiency.toFixed(2)}%`}
             icon={<Gauge className="h-4 w-4" />}
           />
           <StatWidget
             label="Avg Latency"
-            value={loadingHistory ? "-" : `${avgLatency.toFixed(2)}ms`}
+            value={loadingHistory ? "-" : avgLatency === null ? "N/A" : `${avgLatency.toFixed(2)}ms`}
             icon={<History className="h-4 w-4" />}
           />
         </div>
