@@ -95,24 +95,24 @@ export default function Profile() {
 
       // Fetch favorites with service details
       const { data: favData } = await supabase
-        .from('user_favorites')
-        .select('*, services(*)')
+        .from('web_service_favorites')
+        .select('*, web_services(*)')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(10);
 
       // Fetch recent tests
       const { data: testsData } = await supabase
-        .from('test_results')
-        .select('*, services(*)')
+        .from('tests')
+        .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(10);
 
       // Fetch user ratings
       const { data: ratingsData } = await supabase
-        .from('ratings')
-        .select('*, services(*)')
+        .from('web_service_ratings')
+        .select('*, web_services(*)')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
@@ -311,7 +311,7 @@ export default function Profile() {
                         {recentTests.map((test) => (
                           <div key={test.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
                             <div>
-                              <p className="font-medium">{test.services?.name || 'Unknown Service'}</p>
+                              <p className="font-medium">{test.service_url || 'Unknown Service'}</p>
                               <p className="text-sm text-muted-foreground">
                                 {test.test_type} • {test.latency}ms
                               </p>
@@ -341,7 +341,7 @@ export default function Profile() {
                         {ratings.map((rating) => (
                           <div key={rating.id} className="p-3 rounded-lg bg-muted/50">
                             <div className="flex items-center justify-between mb-2">
-                              <p className="font-medium">{rating.services?.name || 'Unknown Service'}</p>
+                              <p className="font-medium">{rating.web_services?.service_name || rating.web_services?.name || 'Unknown Service'}</p>
                               <div className="flex">
                                 {[...Array(5)].map((_, i) => (
                                   <Star
@@ -379,10 +379,10 @@ export default function Profile() {
                       {favorites.map((fav) => (
                         <ServiceCard
                           key={fav.id}
-                          serviceName={fav.services?.name || 'Unknown'}
-                          latency={fav.services?.avg_latency || 0}
+                          serviceName={fav.web_services?.service_name || fav.web_services?.name || 'Unknown'}
+                          latency={fav.web_services?.avg_latency || fav.web_services?.base_latency_estimate || 0}
                           uptime={99.5}
-                          status={fav.services?.status || 'stable'}
+                          status="stable"
                           lastTested="Recently"
                         />
                       ))}
