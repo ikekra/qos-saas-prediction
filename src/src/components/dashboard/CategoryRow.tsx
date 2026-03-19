@@ -7,11 +7,13 @@ import { useNavigate } from 'react-router-dom';
 
 interface Service {
   id: string;
-  name: string;
+  name?: string | null;
+  service_name?: string | null;
   category: string;
-  avg_latency: number;
-  avg_rating: number;
-  status: string;
+  avg_latency?: number | null;
+  base_latency_estimate?: number | null;
+  avg_rating?: number | null;
+  availability_score?: number | null;
 }
 
 interface CategoryRowProps {
@@ -22,16 +24,16 @@ interface CategoryRowProps {
 export function CategoryRow({ category, services }: CategoryRowProps) {
   const navigate = useNavigate();
 
-  const getStatusColor = (latency: number) => {
-    if (latency < 100) return 'status-stable';
-    if (latency < 300) return 'status-degrading';
+  const getStatusColor = (availability: number) => {
+    if (availability >= 99) return 'status-stable';
+    if (availability >= 97) return 'status-degrading';
     return 'status-critical';
   };
 
-  const getStatusLabel = (latency: number) => {
-    if (latency < 100) return 'Fast';
-    if (latency < 300) return 'Moderate';
-    return 'Slow';
+  const getStatusLabel = (availability: number) => {
+    if (availability >= 99) return 'Stable';
+    if (availability >= 97) return 'Degrading';
+    return 'Critical';
   };
 
   return (
@@ -57,9 +59,9 @@ export function CategoryRow({ category, services }: CategoryRowProps) {
               <CardContent className="p-6">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <h3 className="text-lg font-semibold mb-2">{service.name}</h3>
-                    <Badge className={`status-badge ${getStatusColor(service.avg_latency || 0)}`}>
-                      {getStatusLabel(service.avg_latency || 0)}
+                    <h3 className="text-lg font-semibold mb-2">{service.service_name || service.name}</h3>
+                    <Badge className={`status-badge ${getStatusColor(service.availability_score || 0)}`}>
+                      {getStatusLabel(service.availability_score || 0)}
                     </Badge>
                   </div>
                   <div className="flex items-center gap-1 text-sm">
@@ -71,11 +73,11 @@ export function CategoryRow({ category, services }: CategoryRowProps) {
                 <div className="space-y-3 mb-4">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Avg Latency</span>
-                    <span className="font-medium">{Math.round(service.avg_latency || 0)}ms</span>
+                    <span className="font-medium">{Math.round(service.avg_latency ?? service.base_latency_estimate ?? 0)}ms</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Status</span>
-                    <span className="font-medium capitalize">{service.status}</span>
+                    <span className="font-medium">{getStatusLabel(service.availability_score || 0)}</span>
                   </div>
                 </div>
 

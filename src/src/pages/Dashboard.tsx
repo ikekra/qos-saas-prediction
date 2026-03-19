@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Header } from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,8 @@ import { LiveChart } from '@/components/dashboard/LiveChart';
 import { ComparisonQuickView } from '@/components/dashboard/ComparisonQuickView';
 import { ScrollableRow } from '@/components/ScrollableRow';
 import { motion } from 'framer-motion';
+import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/hooks/use-toast';
 
 interface PerformanceMetrics {
   avgLatency: number;
@@ -29,6 +31,7 @@ interface ServicesByCategory {
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { toast } = useToast();
   const [stats, setStats] = useState({
     total: 0,
     planning: 0,
@@ -43,12 +46,82 @@ export default function Dashboard() {
   });
   const [servicesByCategory, setServicesByCategory] = useState<ServicesByCategory>({});
   const [loading, setLoading] = useState(true);
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
 
   useEffect(() => {
     fetchStats();
     fetchPerformanceMetrics();
     fetchServicesByCategory();
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const scheduleRetry = () => {
+      const attempt = Math.min(retryRef.current + 1, 5);
+      retryRef.current = attempt;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => {
+        startSubscription();
+      }, delay);
+    };
+
+    const startSubscription = () => {
+      if (!user) return;
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+      const channel = supabase
+        .channel(`dashboard-tests-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'tests',
+            filter: `user_id=eq.${user.id}`,
+          },
+          () => fetchPerformanceMetrics(),
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+
+      channelRef.current = channel;
+    };
+
+    startSubscription();
+
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [user, toast]);
 
   const fetchStats = async () => {
     if (!user) return;
@@ -76,20 +149,30 @@ export default function Dashboard() {
 
     try {
       const { data: tests } = await supabase
-        .from('test_results')
-        .select('latency, throughput, error_rate')
+        .from('tests')
+        .select('latency, throughput, success_rate')
         .eq('user_id', user.id);
 
       if (tests && tests.length > 0) {
-        const avgLatency = tests.reduce((acc, t) => acc + Number(t.latency || 0), 0) / tests.length;
-        const avgThroughput = tests.reduce((acc, t) => acc + Number(t.throughput || 0), 0) / tests.length;
-        const avgErrorRate = tests.reduce((acc, t) => acc + Number(t.error_rate || 0), 0) / tests.length;
-        const uptime = 100 - avgErrorRate;
+        const latencyValues = tests.map((t) => t.latency).filter((v): v is number => typeof v === 'number');
+        const throughputValues = tests.map((t) => t.throughput).filter((v): v is number => typeof v === 'number');
+        const successValues = tests.map((t) => t.success_rate).filter((v): v is number => typeof v === 'number');
+
+        const avgLatency = latencyValues.length > 0
+          ? latencyValues.reduce((acc, v) => acc + v, 0) / latencyValues.length
+          : 0;
+        const avgThroughput = throughputValues.length > 0
+          ? throughputValues.reduce((acc, v) => acc + v, 0) / throughputValues.length
+          : 0;
+        const avgSuccess = successValues.length > 0
+          ? successValues.reduce((acc, v) => acc + v, 0) / successValues.length
+          : 0;
+        const uptime = avgSuccess;
 
         setPerformanceMetrics({
           avgLatency: Math.round(avgLatency),
           avgThroughput: Math.round(avgThroughput),
-          errorRate: Math.round(avgErrorRate * 10) / 10,
+          errorRate: Math.round((100 - avgSuccess) * 10) / 10,
           uptime: Math.round(uptime * 10) / 10,
         });
       }
@@ -101,9 +184,10 @@ export default function Dashboard() {
   const fetchServicesByCategory = async () => {
     try {
       const { data: services } = await supabase
-        .from('services')
-        .select('*')
-        .order('avg_rating', { ascending: false });
+        .from('web_services')
+        .select('id, name, service_name, category, avg_latency, base_latency_estimate, avg_rating, availability_score')
+        .eq('is_active', true)
+        .order('availability_score', { ascending: false });
 
       if (services) {
         const grouped = services.reduce((acc, service) => {
@@ -134,6 +218,16 @@ export default function Dashboard() {
         </div>
         {/* Hero Section */}
         <DashboardHero />
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="uppercase tracking-[0.18em] text-[0.65rem]">Realtime</span>
+          <Badge variant={realtimeStatus === 'connected' ? 'secondary' : 'outline'}>
+            {realtimeStatus === 'connected'
+              ? 'Connected'
+              : realtimeStatus === 'reconnecting'
+                ? 'Reconnecting'
+                : 'Disconnected'}
+          </Badge>
+        </div>
 
         {loading ? (
           <div className="flex justify-center py-12">
@@ -162,7 +256,17 @@ export default function Dashboard() {
               viewport={{ once: true }}
               transition={{ duration: 0.5, delay: 0.05 }}
             >
-              <h2 className="text-2xl font-bold">Performance Overview</h2>
+              <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold">Performance Overview</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Rolling averages from your latest QoS tests.
+                  </p>
+                </div>
+                <span className="inline-flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                  Live metrics
+                </span>
+              </div>
               <ScrollableRow title="">
                 <PerformanceMetricCard
                   title="Average Latency"
@@ -207,6 +311,12 @@ export default function Dashboard() {
               viewport={{ once: true }}
               transition={{ duration: 0.5, delay: 0.1 }}
             >
+              <div className="flex flex-col gap-2">
+                <h2 className="text-2xl font-bold">Top Services by Category</h2>
+                <p className="text-sm text-muted-foreground">
+                  Fast access to the highest-rated services across the catalog.
+                </p>
+              </div>
               {Object.entries(servicesByCategory).map(([category, services]) => (
                 <CategoryRow key={category} category={category} services={services} />
               ))}
