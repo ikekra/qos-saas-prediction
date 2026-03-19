@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { DashboardCard } from "@/components/DashboardCard";
 import { supabase } from "@/integrations/supabase/client";
@@ -27,6 +28,7 @@ type Recommendation = {
 
 export default function RecommendationsUI() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [recs, setRecs] = useState<Recommendation[]>([]);
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -177,6 +179,21 @@ export default function RecommendationsUI() {
                     {rec.reason && (
                       <p className="text-xs text-muted-foreground mt-2">{rec.reason}</p>
                     )}
+                    <div className="mt-4">
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        onClick={() => {
+                          toast({
+                            title: "Service selected",
+                            description: `Opening ${displayName} in the prediction form.`,
+                          });
+                          navigate(`/recommendations?serviceId=${rec.service_id}`);
+                        }}
+                      >
+                        Select Service
+                      </Button>
+                    </div>
                   </div>
                 );
               })}

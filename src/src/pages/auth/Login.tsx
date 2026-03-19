@@ -8,6 +8,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { FolderKanban, Mail, Lock } from 'lucide-react';
 import authBg from '@/assets/auth-qos-background.jpg';
+import heroImg from '@/assets/hero-qos-monitoring.jpg';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -53,13 +54,19 @@ export default function Login() {
         className="hidden lg:block relative bg-cover bg-center"
         style={{ backgroundImage: `url(${authBg})` }}
       >
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/80 via-primary/60 to-primary/40"></div>
+        <div className="absolute inset-0 bg-gradient-to-br from-primary/90 via-primary/70 to-primary/40"></div>
+        <div className="absolute inset-0 opacity-40 pattern-dots"></div>
         <div className="relative h-full flex flex-col justify-center items-center text-white p-12">
           <FolderKanban className="h-16 w-16 mb-6" />
           <h2 className="text-4xl font-bold mb-4">Welcome Back</h2>
           <p className="text-xl text-center text-white/90 max-w-md">
             Continue your journey with QoS Collab and manage your projects efficiently
           </p>
+          <div className="mt-8 flex flex-wrap gap-3 text-sm text-white/80">
+            <span className="rounded-full bg-white/15 px-3 py-1">Live monitoring</span>
+            <span className="rounded-full bg-white/15 px-3 py-1">QoS insights</span>
+            <span className="rounded-full bg-white/15 px-3 py-1">Smart recommendations</span>
+          </div>
         </div>
       </div>
 
@@ -74,6 +81,14 @@ export default function Login() {
             <CardDescription className="text-base">
               Enter your credentials to access your account
             </CardDescription>
+            <div className="pt-2">
+              <img
+                src={heroImg}
+                alt="QoS monitoring preview"
+                className="mx-auto h-28 w-full max-w-sm rounded-xl object-cover shadow-soft"
+                loading="lazy"
+              />
+            </div>
           </CardHeader>
 
           <form onSubmit={handleSubmit}>
@@ -120,6 +135,9 @@ export default function Login() {
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
 
+              <p className="text-xs text-muted-foreground text-center">
+                By continuing you agree to the Terms and Privacy Policy.
+              </p>
               <p className="text-center text-sm text-muted-foreground">
                 Don't have an account?{' '}
                 <Link to="/auth/register" className="text-primary hover:underline font-medium">

@@ -40,7 +40,21 @@ export function ServiceCard({
         "group h-full border bg-card/90 transition-all duration-300 hover:-translate-y-1 hover:shadow-xl",
         selected && "ring-2 ring-primary/70",
         recommended && "border-primary/60",
+        onSelect && "cursor-pointer",
       )}
+      onClick={onSelect}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onKeyDown={
+        onSelect
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect();
+              }
+            }
+          : undefined
+      }
     >
       <CardHeader className="flex flex-row items-center gap-3">
         <div className="h-12 w-12 rounded-xl border bg-white p-2 shadow-sm">
@@ -85,8 +99,8 @@ export function ServiceCard({
         )}
       </CardContent>
       <CardFooter>
-        <Button className="w-full" type="button" onClick={onSelect}>
-          Select Service
+        <Button className="w-full" type="button" onClick={onSelect} disabled={selected}>
+          {selected ? "Selected" : "Select Service"}
         </Button>
       </CardFooter>
     </Card>

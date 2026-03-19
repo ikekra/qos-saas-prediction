@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -47,6 +48,7 @@ const baseForm: PredictionFormValues = {
 
 export default function Recommendations() {
   const { toast } = useToast();
+  const [searchParams] = useSearchParams();
   const [services, setServices] = useState<WebService[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
@@ -58,6 +60,7 @@ export default function Recommendations() {
   const [history, setHistory] = useState<PredictionRow[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const formRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const fetchServices = async () => {
@@ -85,6 +88,14 @@ export default function Recommendations() {
 
     fetchServices();
   }, [toast]);
+
+  useEffect(() => {
+    const requestedId = searchParams.get("serviceId");
+    if (!requestedId || services.length === 0) return;
+    const service = services.find((item) => item.id === requestedId);
+    if (!service) return;
+    handleSelectService(service);
+  }, [searchParams, services]);
 
   const fetchHistory = async () => {
     setHistoryError(null);
@@ -190,6 +201,7 @@ export default function Recommendations() {
       availability: service.availability_score ?? prev.availability,
       reliability: service.reliability_score ?? service.availability_score ?? prev.reliability,
     }));
+    formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   const handleSubmit = async (values: PredictionFormValues) => {
@@ -300,6 +312,19 @@ export default function Recommendations() {
           </div>
         )}
 
+        <div ref={formRef} />
+        {selectedServiceId && (
+          <Card className="shadow-soft">
+            <CardContent className="py-4 text-sm">
+              Selected Service:{" "}
+              <span className="font-semibold">
+                {services.find((service) => service.id === selectedServiceId)?.service_name ||
+                  services.find((service) => service.id === selectedServiceId)?.name ||
+                  "Service"}
+              </span>
+            </CardContent>
+          </Card>
+        )}
         <DashboardCard
           title="QoS Prediction Form"
           description="Select a service above to auto-fill defaults, then adjust inputs and predict."
