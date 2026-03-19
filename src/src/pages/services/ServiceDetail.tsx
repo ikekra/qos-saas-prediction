@@ -35,7 +35,7 @@ export default function ServiceDetail() {
 
       // Fetch service
       const { data: serviceData, error: serviceError } = await supabase
-        .from('services')
+        .from('web_services')
         .select('*')
         .eq('id', id)
         .single();
@@ -46,7 +46,7 @@ export default function ServiceDetail() {
       if (user) {
         // Check if favorited
         const { data: favData } = await supabase
-          .from('user_favorites')
+          .from('web_service_favorites')
           .select('*')
           .eq('user_id', user.id)
           .eq('service_id', id)
@@ -56,7 +56,7 @@ export default function ServiceDetail() {
 
         // Fetch user's rating
         const { data: ratingData } = await supabase
-          .from('ratings')
+          .from('web_service_ratings')
           .select('*')
           .eq('user_id', user.id)
           .eq('service_id', id)
@@ -70,22 +70,26 @@ export default function ServiceDetail() {
 
       // Fetch all ratings
       const { data: ratingsData } = await supabase
-        .from('ratings')
+        .from('web_service_ratings')
         .select('*, profiles(name)')
         .eq('service_id', id)
         .order('created_at', { ascending: false });
 
       setRatings(ratingsData || []);
 
-      // Fetch test history
-      const { data: testsData } = await supabase
-        .from('test_results')
-        .select('*')
-        .eq('service_id', id)
-        .order('created_at', { ascending: false })
-        .limit(20);
+      // Fetch test history (match by service URL)
+      if (serviceData?.base_url || serviceData?.docs_url) {
+        const { data: testsData } = await supabase
+          .from('tests')
+          .select('*')
+          .eq('service_url', serviceData.base_url || serviceData.docs_url)
+          .order('created_at', { ascending: false })
+          .limit(20);
 
-      setTestHistory(testsData || []);
+        setTestHistory(testsData || []);
+      } else {
+        setTestHistory([]);
+      }
     } catch (error: any) {
       toast({
         title: 'Error loading service',
@@ -103,13 +107,13 @@ export default function ServiceDetail() {
 
       if (isFavorite) {
         await supabase
-          .from('user_favorites')
+          .from('web_service_favorites')
           .delete()
           .eq('user_id', user.id)
           .eq('service_id', id);
       } else {
         await supabase
-          .from('user_favorites')
+          .from('web_service_favorites')
           .insert({ user_id: user.id, service_id: id });
       }
 
@@ -141,7 +145,7 @@ export default function ServiceDetail() {
         return;
       }
 
-      const { error } = await supabase.from('ratings').upsert({
+      const { error } = await supabase.from('web_service_ratings').upsert({
         user_id: user.id,
         service_id: id,
         rating: userRating,
@@ -202,9 +206,20 @@ export default function ServiceDetail() {
 
   const chartData = testHistory.map((test) => ({
     time: new Date(test.created_at).toLocaleTimeString(),
-    latency: test.latency,
-    throughput: test.throughput,
+    latency: test.latency ?? 0,
+    throughput: test.throughput ?? 0,
   }));
+
+  const displayName = service.service_name || service.name || 'Service';
+  const avgRating = ratings.length > 0
+    ? ratings.reduce((sum, r) => sum + Number(r.rating || 0), 0) / ratings.length
+    : Number(service.avg_rating || 0);
+  const totalRatings = service.total_ratings ?? ratings.length;
+  const status = service.availability_score >= 99
+    ? 'stable'
+    : service.availability_score >= 97
+      ? 'degrading'
+      : 'critical';
 
   return (
     <div className="min-h-screen bg-background">
@@ -231,11 +246,11 @@ export default function ServiceDetail() {
 
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
             <div>
-              <h1 className="text-4xl font-bold mb-2">{service.name}</h1>
+              <h1 className="text-4xl font-bold mb-2">{displayName}</h1>
               <div className="flex items-center gap-4 text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <Globe className="h-4 w-4" />
-                  {service.base_url}
+                  {service.base_url || service.docs_url}
                 </span>
                 {service.category && (
                   <span className="flex items-center gap-1">
@@ -270,14 +285,14 @@ export default function ServiceDetail() {
           <div className="grid gap-6 md:grid-cols-3 mb-8">
             <MetricCard
               title="Average Latency"
-              value={`${service.avg_latency?.toFixed(0) || 0}ms`}
+              value={`${(service.avg_latency ?? service.base_latency_estimate ?? 0).toFixed(0)}ms`}
               icon={TrendingUp}
-              status={service.status}
+              status={status}
             />
             <MetricCard
               title="Average Rating"
-              value={service.avg_rating?.toFixed(1) || '0.0'}
-              subtitle={`${service.total_ratings || 0} ratings`}
+              value={avgRating.toFixed(1)}
+              subtitle={`${totalRatings || 0} ratings`}
               icon={Star}
             />
             <Card className="metric-card">
@@ -286,7 +301,7 @@ export default function ServiceDetail() {
                   <div className="space-y-1">
                     <p className="text-sm font-medium text-muted-foreground">Status</p>
                     <div className="mt-2">
-                      <StatusBadge status={service.status} showIcon />
+                      <StatusBadge status={status} showIcon />
                     </div>
                   </div>
                   <div className="rounded-lg bg-primary/10 p-2.5">
