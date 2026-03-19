@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Plus, Search, Filter } from 'lucide-react';
@@ -9,6 +9,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Header } from '@/components/Header';
 import { ServiceCard } from '@/components/ServiceCard';
+import { Badge } from '@/components/ui/badge';
 
 export default function ServicesList() {
   const navigate = useNavigate();
@@ -20,9 +21,23 @@ export default function ServicesList() {
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [runningId, setRunningId] = useState<string | null>(null);
   const [liveMetrics, setLiveMetrics] = useState<Record<string, { latency: number; uptime: number; throughput: number; testedAt: string; recommendation?: string }>>({});
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchServices();
+  }, []);
+
+  useEffect(() => {
+    const resolveUser = async () => {
+      const { data } = await supabase.auth.getUser();
+      setUserId(data.user?.id ?? null);
+    };
+    resolveUser();
   }, []);
 
   useEffect(() => {
@@ -69,6 +84,103 @@ export default function ServicesList() {
   };
 
   const categories = [...new Set(services.map((s) => s.category).filter(Boolean))];
+
+  const serviceUrlToId = useMemo(() => {
+    const map = new Map<string, string>();
+    services.forEach((service) => {
+      if (service.base_url) map.set(service.base_url, service.id);
+      if (service.docs_url) map.set(service.docs_url, service.id);
+    });
+    return map;
+  }, [services]);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const scheduleRetry = () => {
+      const attempt = Math.min(retryRef.current + 1, 5);
+      retryRef.current = attempt;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => startSubscription(), delay);
+    };
+
+    const startSubscription = () => {
+      if (!userId) return;
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+
+      const channel = supabase
+        .channel(`services-list-tests-${userId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'tests',
+            filter: `user_id=eq.${userId}`,
+          },
+          (payload) => {
+            const row = payload.new as {
+              service_url: string;
+              latency: number | null;
+              throughput: number | null;
+              uptime: number | null;
+            };
+            const serviceId = serviceUrlToId.get(row.service_url);
+            if (!serviceId) return;
+            setLiveMetrics((prev) => ({
+              ...prev,
+              [serviceId]: {
+                latency: Number(row.latency ?? 0),
+                throughput: Number(row.throughput ?? 0),
+                uptime: Number(row.uptime ?? 0),
+                testedAt: new Date().toLocaleTimeString(),
+                recommendation: getRecommendation({
+                  latency: Number(row.latency ?? 0),
+                  throughput: Number(row.throughput ?? 0),
+                  uptime: Number(row.uptime ?? 0),
+                }),
+              },
+            }));
+          },
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+
+      channelRef.current = channel;
+    };
+
+    startSubscription();
+
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [userId, serviceUrlToId, toast]);
 
   const getStatus = (availability?: number | null) => {
     if (availability === null || availability === undefined) return 'stable';
@@ -170,6 +282,16 @@ export default function ServicesList() {
             <div>
               <h1 className="text-4xl font-bold mb-2">Services</h1>
               <p className="text-muted-foreground">Browse and test web services</p>
+              <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="uppercase tracking-[0.18em] text-[0.65rem]">Realtime</span>
+                <Badge variant={realtimeStatus === 'connected' ? 'secondary' : 'outline'}>
+                  {realtimeStatus === 'connected'
+                    ? 'Connected'
+                    : realtimeStatus === 'reconnecting'
+                      ? 'Reconnecting'
+                      : 'Disconnected'}
+                </Badge>
+              </div>
             </div>
             <Link to="/services/new">
               <Button className="gap-2">
