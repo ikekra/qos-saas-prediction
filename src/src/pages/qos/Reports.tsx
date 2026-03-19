@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from '@/components/Header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -12,6 +12,7 @@ import { Loader2, TrendingUp, Clock, Activity, Download, Filter, Sparkles } from
 import { useToast } from '@/hooks/use-toast';
 import { format, subDays, isAfter, isBefore } from 'date-fns';
 import { motion } from 'framer-motion';
+import { Badge } from '@/components/ui/badge';
 
 interface Test {
   id: string;
@@ -35,10 +36,79 @@ export default function Reports() {
   const [dateTo, setDateTo] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [filterService, setFilterService] = useState<string>('all');
   const [filterTestType, setFilterTestType] = useState<string>('all');
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
 
   useEffect(() => {
     fetchTests();
   }, []);
+
+  useEffect(() => {
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    const setupRealtime = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const scheduleRetry = () => {
+        const attempt = Math.min(retryRef.current + 1, 5);
+        retryRef.current = attempt;
+        const delay = Math.min(30000, 1000 * 2 ** attempt);
+        if (retryTimer.current) window.clearTimeout(retryTimer.current);
+        retryTimer.current = window.setTimeout(() => setupRealtime(), delay);
+      };
+
+      channel = supabase
+        .channel(`reports-realtime-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'tests',
+            filter: `user_id=eq.${user.id}`,
+          },
+          (payload) => {
+            const row = payload.new as Test;
+            setTests((prev) => [row, ...prev].slice(0, 50));
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+    };
+
+    setupRealtime();
+
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [toast]);
 
   useEffect(() => {
     applyFilters();
@@ -140,23 +210,29 @@ export default function Reports() {
   const uniqueServices = Array.from(new Set(tests.map(t => t.service_url)));
   const uniqueTestTypes = Array.from(new Set(tests.map(t => t.test_type)));
 
-  const chartData = filteredTests.slice(0, 10).reverse().map(test => ({
-    name: format(new Date(test.created_at), 'MMM dd HH:mm'),
-    latency: test.latency || 0,
-    uptime: test.uptime || 0,
-    throughput: test.throughput || 0,
-  }));
+  const chartData = useMemo(() => (
+    filteredTests.slice(0, 10).reverse().map(test => ({
+      name: format(new Date(test.created_at), 'MMM dd HH:mm'),
+      latency: test.latency ?? 0,
+      uptime: test.uptime ?? 0,
+      throughput: test.throughput ?? 0,
+    }))
+  ), [filteredTests]);
 
-  const avgLatency = filteredTests.length > 0 
-    ? (filteredTests.reduce((sum, t) => sum + (t.latency || 0), 0) / filteredTests.length).toFixed(2)
+  const latencyValues = filteredTests.map((t) => t.latency).filter((v): v is number => typeof v === 'number');
+  const uptimeValues = filteredTests.map((t) => t.uptime).filter((v): v is number => typeof v === 'number');
+  const successValues = filteredTests.map((t) => t.success_rate).filter((v): v is number => typeof v === 'number');
+
+  const avgLatency = latencyValues.length > 0
+    ? (latencyValues.reduce((sum, v) => sum + v, 0) / latencyValues.length).toFixed(2)
     : '0';
 
-  const avgUptime = filteredTests.length > 0
-    ? (filteredTests.reduce((sum, t) => sum + (t.uptime || 0), 0) / filteredTests.length).toFixed(2)
+  const avgUptime = uptimeValues.length > 0
+    ? (uptimeValues.reduce((sum, v) => sum + v, 0) / uptimeValues.length).toFixed(2)
     : '0';
 
-  const avgSuccessRate = filteredTests.length > 0
-    ? (filteredTests.reduce((sum, t) => sum + (t.success_rate || 0), 0) / filteredTests.length).toFixed(2)
+  const avgSuccessRate = successValues.length > 0
+    ? (successValues.reduce((sum, v) => sum + v, 0) / successValues.length).toFixed(2)
     : '0';
 
   // Test type distribution
@@ -210,6 +286,13 @@ export default function Reports() {
                 <span className="rounded-full bg-white/15 px-3 py-1">Trend insights</span>
                 <span className="rounded-full bg-white/15 px-3 py-1">CSV exports</span>
               </div>
+              <Badge variant="secondary" className="self-start">
+                {realtimeStatus === 'connected'
+                  ? 'Realtime: Connected'
+                  : realtimeStatus === 'reconnecting'
+                    ? 'Realtime: Reconnecting'
+                    : 'Realtime: Disconnected'}
+              </Badge>
             </div>
             <Button onClick={exportToCSV} size="lg" variant="secondary" className="gap-2 shadow-soft">
               <Download className="h-4 w-4" />

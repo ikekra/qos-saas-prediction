@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Header } from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,7 @@ import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
 import { ChartContainer } from '@/components/ui/chart';
 import { format } from 'date-fns';
 import { motion } from 'framer-motion';
+import { Badge } from '@/components/ui/badge';
 
 interface Stats {
   totalTests: number;
@@ -54,6 +55,11 @@ export default function QosDashboard() {
   const [alerts, setAlerts] = useState<string[]>([]);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [predictionLoading, setPredictionLoading] = useState(true);
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
 
   // Alert thresholds
   const LATENCY_THRESHOLD = 500; // ms
@@ -63,6 +69,124 @@ export default function QosDashboard() {
   useEffect(() => {
     fetchStats();
   }, []);
+
+  useEffect(() => {
+    if (tests.length === 0) return;
+
+    const latencyValues = tests.map((t) => t.latency).filter((v): v is number => typeof v === 'number');
+    const uptimeValues = tests.map((t) => t.uptime).filter((v): v is number => typeof v === 'number');
+    const successValues = tests.map((t) => t.success_rate).filter((v): v is number => typeof v === 'number');
+
+    const avgLatency = latencyValues.length > 0
+      ? latencyValues.reduce((sum, v) => sum + v, 0) / latencyValues.length
+      : 0;
+    const avgUptime = uptimeValues.length > 0
+      ? uptimeValues.reduce((sum, v) => sum + v, 0) / uptimeValues.length
+      : 0;
+    const successRate = successValues.length > 0
+      ? successValues.reduce((sum, v) => sum + v, 0) / successValues.length
+      : 0;
+
+    setStats({
+      totalTests: tests.length,
+      avgLatency,
+      avgUptime,
+      successRate,
+    });
+
+    const newAlerts: string[] = [];
+    if (avgLatency > LATENCY_THRESHOLD) {
+      newAlerts.push(`High average latency detected: ${avgLatency.toFixed(2)}ms`);
+    }
+    if (avgUptime < UPTIME_THRESHOLD && uptimeValues.length > 0) {
+      newAlerts.push(`Low uptime detected: ${avgUptime.toFixed(2)}%`);
+    }
+    if (successRate < SUCCESS_THRESHOLD && successValues.length > 0) {
+      newAlerts.push(`Low success rate: ${successRate.toFixed(2)}%`);
+    }
+    setAlerts(newAlerts);
+  }, [tests]);
+
+  useEffect(() => {
+    const scheduleRetry = () => {
+      const attempt = Math.min(retryRef.current + 1, 5);
+      retryRef.current = attempt;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => startSubscription(), delay);
+    };
+
+    const startSubscription = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+
+      const channel = supabase
+        .channel(`tests-realtime-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'tests',
+            filter: `user_id=eq.${user.id}`,
+          },
+          (payload) => {
+            const row = payload.new as Test;
+            setTests((prev) => [row, ...prev].slice(0, 20));
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'qos_predictions',
+            filter: `user_id=eq.${user.id}`,
+          },
+          (payload) => {
+            const row = payload.new as Prediction;
+            setPredictions((prev) => [row, ...prev].slice(0, 10));
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+
+      channelRef.current = channel;
+    };
+
+    startSubscription();
+
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [toast]);
 
   const fetchStats = async () => {
     try {
@@ -82,9 +206,19 @@ export default function QosDashboard() {
       if (testsData && testsData.length > 0) {
         setTests(testsData);
         
-        const avgLatency = testsData.reduce((sum, t) => sum + (t.latency || 0), 0) / testsData.length;
-        const avgUptime = testsData.reduce((sum, t) => sum + (t.uptime || 0), 0) / testsData.length;
-        const successRate = testsData.reduce((sum, t) => sum + (t.success_rate || 0), 0) / testsData.length;
+        const latencyValues = testsData.map((t) => t.latency).filter((v): v is number => typeof v === 'number');
+        const uptimeValues = testsData.map((t) => t.uptime).filter((v): v is number => typeof v === 'number');
+        const successValues = testsData.map((t) => t.success_rate).filter((v): v is number => typeof v === 'number');
+
+        const avgLatency = latencyValues.length > 0
+          ? latencyValues.reduce((sum, v) => sum + v, 0) / latencyValues.length
+          : 0;
+        const avgUptime = uptimeValues.length > 0
+          ? uptimeValues.reduce((sum, v) => sum + v, 0) / uptimeValues.length
+          : 0;
+        const successRate = successValues.length > 0
+          ? successValues.reduce((sum, v) => sum + v, 0) / successValues.length
+          : 0;
 
         setStats({
           totalTests: testsData.length,
@@ -98,15 +232,17 @@ export default function QosDashboard() {
         if (avgLatency > LATENCY_THRESHOLD) {
           newAlerts.push(`High average latency detected: ${avgLatency.toFixed(2)}ms`);
         }
-        if (avgUptime < UPTIME_THRESHOLD) {
+        if (avgUptime < UPTIME_THRESHOLD && uptimeValues.length > 0) {
           newAlerts.push(`Low uptime detected: ${avgUptime.toFixed(2)}%`);
         }
-        if (successRate < SUCCESS_THRESHOLD) {
+        if (successRate < SUCCESS_THRESHOLD && successValues.length > 0) {
           newAlerts.push(`Low success rate: ${successRate.toFixed(2)}%`);
         }
-        
+
         if (newAlerts.length > 0) {
           setAlerts(newAlerts);
+        } else {
+          setAlerts([]);
         }
       }
 
@@ -166,21 +302,25 @@ export default function QosDashboard() {
     });
   };
 
-  const chartData = tests.slice(0, 10).reverse().map(test => ({
-    name: format(new Date(test.created_at), 'MMM dd HH:mm'),
-    latency: test.latency || 0,
-    uptime: test.uptime || 0,
-    success: test.success_rate || 0,
-  }));
+  const chartData = useMemo(() => (
+    tests.slice(0, 10).reverse().map(test => ({
+      name: format(new Date(test.created_at), 'MMM dd HH:mm'),
+      latency: test.latency ?? 0,
+      uptime: test.uptime ?? 0,
+      success: test.success_rate ?? 0,
+    }))
+  ), [tests]);
 
-  const predictionChartData = predictions.slice(0, 8).reverse().map((row) => ({
-    name: format(new Date(row.created_at), 'MMM dd HH:mm'),
-    efficiency: row.predicted_efficiency || 0,
-  }));
+  const predictionChartData = useMemo(() => (
+    predictions.slice(0, 8).reverse().map((row) => ({
+      name: format(new Date(row.created_at), 'MMM dd HH:mm'),
+      efficiency: row.predicted_efficiency ?? 0,
+    }))
+  ), [predictions]);
 
   const avgPrediction =
     predictions.length > 0
-      ? predictions.reduce((sum, row) => sum + (row.predicted_efficiency || 0), 0) / predictions.length
+      ? predictions.reduce((sum, row) => sum + (row.predicted_efficiency ?? 0), 0) / predictions.length
       : 0;
 
   return (
@@ -223,6 +363,13 @@ export default function QosDashboard() {
               </div>
             </div>
             <div className="flex flex-col gap-3">
+              <Badge variant="secondary" className="self-start">
+                {realtimeStatus === 'connected'
+                  ? 'Realtime: Connected'
+                  : realtimeStatus === 'reconnecting'
+                    ? 'Realtime: Reconnecting'
+                    : 'Realtime: Disconnected'}
+              </Badge>
               <Button onClick={exportToCSV} variant="secondary" size="lg" className="gap-2 shadow-soft">
                 <Download className="h-4 w-4" />
                 Export CSV
