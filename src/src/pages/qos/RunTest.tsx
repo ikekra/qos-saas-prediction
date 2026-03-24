@@ -14,6 +14,8 @@ export default function RunTest() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
+  const [tokenCheckLoading, setTokenCheckLoading] = useState(false);
+  const [orderLoading, setOrderLoading] = useState(false);
   const [serviceUrl, setServiceUrl] = useState('');
   const [testType, setTestType] = useState<'latency' | 'load' | 'uptime' | 'throughput'>('latency');
 
@@ -54,6 +56,58 @@ export default function RunTest() {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTokenCheckTest = async () => {
+    try {
+      setTokenCheckLoading(true);
+      const { data, error } = await supabase.functions.invoke("token-check-demo", {
+        body: {},
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      toast({
+        title: "Token Deducted",
+        description: `Deducted ${data?.deducted ?? 500} tokens. Balance: ${data?.balance ?? "-"}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Token Check Failed",
+        description: error?.message || "Could not call token-check-demo",
+        variant: "destructive",
+      });
+    } finally {
+      setTokenCheckLoading(false);
+    }
+  };
+
+  const handleCreateOrderTest = async () => {
+    try {
+      setOrderLoading(true);
+      const { data, error } = await supabase.functions.invoke("payments-create-order", {
+        body: { pack: "starter" },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      toast({
+        title: "Order Created",
+        description: `Order: ${data?.orderId ?? "-"} | Amount: ${data?.amount ?? "-"} paise | Tokens: ${data?.tokensPurchased ?? "-"}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: "Create Order Failed",
+        description: error?.message || "Could not call payments-create-order",
+        variant: "destructive",
+      });
+    } finally {
+      setOrderLoading(false);
     }
   };
 
@@ -131,6 +185,40 @@ export default function RunTest() {
                       <Play className="mr-2 h-4 w-4" />
                       Run Test
                     </>
+                  )}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleTokenCheckTest}
+                  disabled={tokenCheckLoading}
+                >
+                  {tokenCheckLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Testing Token Deduction...
+                    </>
+                  ) : (
+                    "Test Token Deduction (500)"
+                  )}
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  onClick={handleCreateOrderTest}
+                  disabled={orderLoading}
+                >
+                  {orderLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Creating Order...
+                    </>
+                  ) : (
+                    "Test Create Order (Starter)"
                   )}
                 </Button>
               </form>

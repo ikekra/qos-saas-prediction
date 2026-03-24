@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { User, Mail, Building, Calendar, Heart, TestTube, Star, Sparkles } from 'lucide-react';
+import { User, Mail, Building, Heart, TestTube, Star, Sparkles, Wallet, Coins, ReceiptText } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,6 +15,67 @@ import { ServiceCard } from '@/components/ServiceCard';
 import { ScrollableRow } from '@/components/ScrollableRow';
 import { requireUser } from '@/lib/auth';
 
+type UserSubscription = {
+  token_balance: number;
+  lifetime_tokens_used: number;
+  created_at: string | null;
+};
+
+type TokenTransaction = {
+  id: string;
+  type: 'credit' | 'debit';
+  amount: number;
+  balance_after: number;
+  description: string;
+  endpoint: string | null;
+  created_at: string;
+};
+
+type PaymentRecord = {
+  id: string;
+  amount_in_paise: number;
+  tokens_purchased: number;
+  status: 'pending' | 'success' | 'failed';
+  pack_name: string | null;
+  created_at: string;
+};
+
+type PackName = 'starter' | 'growth' | 'pro';
+
+type RazorpaySuccessResponse = {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+};
+
+type RazorpayOptions = {
+  key: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description: string;
+  order_id: string;
+  handler: (response: RazorpaySuccessResponse) => Promise<void>;
+  prefill?: {
+    email?: string;
+  };
+  theme?: {
+    color: string;
+  };
+};
+
+type RazorpayInstance = {
+  open: () => void;
+};
+
+type RazorpayConstructor = new (options: RazorpayOptions) => RazorpayInstance;
+
+declare global {
+  interface Window {
+    Razorpay?: RazorpayConstructor;
+  }
+}
+
 export default function Profile() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -26,10 +87,19 @@ export default function Profile() {
   const [favorites, setFavorites] = useState<any[]>([]);
   const [recentTests, setRecentTests] = useState<any[]>([]);
   const [ratings, setRatings] = useState<any[]>([]);
+  const [subscription, setSubscription] = useState<UserSubscription | null>(null);
+  const [tokenTransactions, setTokenTransactions] = useState<TokenTransaction[]>([]);
+  const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
+  const [topUpLoading, setTopUpLoading] = useState<Record<PackName, boolean>>({
+    starter: false,
+    growth: false,
+    pro: false,
+  });
 
   useEffect(() => {
     fetchProfile();
     fetchUserActivity();
+    fetchSubscriptionData();
   }, []);
 
   useEffect(() => {
@@ -121,6 +191,125 @@ export default function Profile() {
       setRatings(ratingsData || []);
     } catch (error) {
       console.error('Error fetching activity:', error);
+    }
+  };
+
+  const fetchSubscriptionData = async () => {
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const db = supabase as any;
+
+      const [subscriptionRes, transactionsRes, paymentsRes] = await Promise.all([
+        db
+          .from('user_profiles')
+          .select('token_balance, lifetime_tokens_used, created_at')
+          .eq('id', user.id)
+          .maybeSingle(),
+        db
+          .from('token_transactions')
+          .select('id, type, amount, balance_after, description, endpoint, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(8),
+        db
+          .from('payments')
+          .select('id, amount_in_paise, tokens_purchased, status, pack_name, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(8),
+      ]);
+
+      if (!subscriptionRes.error && subscriptionRes.data) {
+        setSubscription(subscriptionRes.data as UserSubscription);
+      }
+      if (!transactionsRes.error) {
+        setTokenTransactions((transactionsRes.data || []) as TokenTransaction[]);
+      }
+      if (!paymentsRes.error) {
+        setPaymentHistory((paymentsRes.data || []) as PaymentRecord[]);
+      }
+    } catch (error) {
+      console.error('Error fetching subscription details:', error);
+    }
+  };
+
+  const formatNumber = (value: number) => new Intl.NumberFormat('en-IN').format(value || 0);
+  const formatRupeesFromPaise = (paise: number) =>
+    new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(
+      (paise || 0) / 100,
+    );
+
+  const loadRazorpayScript = async () => {
+    if (window.Razorpay) return true;
+    return await new Promise<boolean>((resolve) => {
+      const script = document.createElement('script');
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.async = true;
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
+
+  const handleTopUp = async (pack: PackName) => {
+    setTopUpLoading((prev) => ({ ...prev, [pack]: true }));
+    try {
+      const user = await requireUser();
+
+      const { data: orderData, error: orderError } = await supabase.functions.invoke('payments-create-order', {
+        body: { pack },
+      });
+      if (orderError) throw orderError;
+
+      const razorpayReady = await loadRazorpayScript();
+      if (!razorpayReady || !window.Razorpay) {
+        toast({
+          title: 'Checkout unavailable',
+          description: 'Could not load Razorpay checkout. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const razorpay = new window.Razorpay({
+        key: orderData.key,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: 'QoSCollab',
+        description: `${pack.toUpperCase()} token top-up`,
+        order_id: orderData.orderId,
+        prefill: { email: user.email ?? undefined },
+        theme: { color: '#0ea5e9' },
+        handler: async (response: RazorpaySuccessResponse) => {
+          const { error: verifyError } = await supabase.functions.invoke('payments-verify', {
+            body: response,
+          });
+          if (verifyError) throw verifyError;
+
+          toast({
+            title: 'Top-up successful',
+            description: 'Payment verified and tokens credited.',
+          });
+          await fetchSubscriptionData();
+        },
+      });
+
+      razorpay.open();
+    } catch (error: any) {
+      if (error?.message?.includes('Authentication')) {
+        navigate('/auth/login');
+      }
+      toast({
+        title: 'Top-up failed',
+        description: error?.message || 'Could not start token top-up.',
+        variant: 'destructive',
+      });
+    } finally {
+      setTopUpLoading((prev) => ({ ...prev, [pack]: false }));
     }
   };
 
@@ -227,6 +416,7 @@ export default function Profile() {
           <Tabs defaultValue="profile" className="space-y-6">
             <TabsList className="bg-white/80 backdrop-blur-sm border border-border/70">
               <TabsTrigger value="profile">Profile Info</TabsTrigger>
+              <TabsTrigger value="subscription">Subscription</TabsTrigger>
               <TabsTrigger value="activity">Activity</TabsTrigger>
               <TabsTrigger value="favorites">Favorites</TabsTrigger>
             </TabsList>
@@ -294,6 +484,141 @@ export default function Profile() {
                   </Button>
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            <TabsContent value="subscription">
+              <div className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <Card className="brand-card">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Wallet className="h-4 w-4" />
+                        Current Balance
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-3xl font-semibold">{formatNumber(subscription?.token_balance || 0)}</p>
+                      <p className="text-xs text-muted-foreground mt-1">Available tokens</p>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="brand-card">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Coins className="h-4 w-4" />
+                        Lifetime Used
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-3xl font-semibold">{formatNumber(subscription?.lifetime_tokens_used || 0)}</p>
+                      <p className="text-xs text-muted-foreground mt-1">Total consumed tokens</p>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="brand-card">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <ReceiptText className="h-4 w-4" />
+                        Plan Type
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-3xl font-semibold">Free + Top-up</p>
+                      <p className="text-xs text-muted-foreground mt-1">Pay only when tokens run low</p>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <Card className="brand-card">
+                  <CardHeader>
+                    <CardTitle>Top Up Tokens</CardTitle>
+                    <CardDescription>Buy additional tokens when your balance is low</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 md:grid-cols-3">
+                    <Button type="button" onClick={() => void handleTopUp('starter')} disabled={topUpLoading.starter}>
+                      {topUpLoading.starter ? 'Starting...' : 'Starter ₹199'}
+                    </Button>
+                    <Button type="button" variant="secondary" onClick={() => void handleTopUp('growth')} disabled={topUpLoading.growth}>
+                      {topUpLoading.growth ? 'Starting...' : 'Growth ₹499'}
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => void handleTopUp('pro')} disabled={topUpLoading.pro}>
+                      {topUpLoading.pro ? 'Starting...' : 'Pro ₹999'}
+                    </Button>
+                  </CardContent>
+                </Card>
+
+                <Card className="brand-card">
+                  <CardHeader>
+                    <CardTitle>Recent Token Activity</CardTitle>
+                    <CardDescription>Latest debits and credits from your account</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {tokenTransactions.length > 0 ? (
+                      <div className="space-y-3">
+                        {tokenTransactions.map((tx) => (
+                          <div key={tx.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                            <div>
+                              <p className="font-medium">
+                                <span className={tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}>
+                                  {tx.type === 'credit' ? '+' : '-'} {formatNumber(tx.amount)}
+                                </span>{' '}
+                                tokens
+                              </p>
+                              <p className="text-sm text-muted-foreground">
+                                {tx.description} {tx.endpoint ? `• ${tx.endpoint}` : ''} • Balance: {formatNumber(tx.balance_after)}
+                              </p>
+                            </div>
+                            <div className="text-sm text-muted-foreground">{new Date(tx.created_at).toLocaleString()}</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-center text-muted-foreground py-8">No token transactions yet</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="brand-card">
+                  <CardHeader>
+                    <CardTitle>Recent Top-ups</CardTitle>
+                    <CardDescription>Your latest payment attempts and statuses</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {paymentHistory.length > 0 ? (
+                      <div className="space-y-3">
+                        {paymentHistory.map((payment) => (
+                          <div key={payment.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                            <div>
+                              <p className="font-medium">
+                                {formatRupeesFromPaise(payment.amount_in_paise)} • {formatNumber(payment.tokens_purchased)} tokens
+                              </p>
+                              <p className="text-sm text-muted-foreground">
+                                Pack: {payment.pack_name || 'custom'}
+                              </p>
+                            </div>
+                            <div className="text-right">
+                              <p
+                                className={`text-sm font-medium ${
+                                  payment.status === 'success'
+                                    ? 'text-emerald-600'
+                                    : payment.status === 'failed'
+                                      ? 'text-rose-600'
+                                      : 'text-amber-600'
+                                }`}
+                              >
+                                {payment.status}
+                              </p>
+                              <p className="text-xs text-muted-foreground">{new Date(payment.created_at).toLocaleDateString()}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-center text-muted-foreground py-8">No top-up payments yet</p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
             </TabsContent>
 
             <TabsContent value="activity">

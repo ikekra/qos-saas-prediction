@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   ArrowRight,
@@ -8,8 +8,10 @@ import {
   ChevronRight,
   Cpu,
   Globe,
+  IndianRupee,
   LineChart,
   Lock,
+  WalletCards,
   Shield,
   Zap,
 } from 'lucide-react';
@@ -17,6 +19,43 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
+
+type PackName = 'starter' | 'growth' | 'pro';
+
+type RazorpaySuccessResponse = {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+};
+
+type RazorpayOptions = {
+  key: string;
+  amount: number;
+  currency: string;
+  name: string;
+  description: string;
+  order_id: string;
+  handler: (response: RazorpaySuccessResponse) => Promise<void>;
+  prefill?: {
+    email?: string;
+  };
+  theme?: {
+    color: string;
+  };
+};
+
+type RazorpayInstance = {
+  open: () => void;
+};
+
+type RazorpayConstructor = new (options: RazorpayOptions) => RazorpayInstance;
+
+declare global {
+  interface Window {
+    Razorpay?: RazorpayConstructor;
+  }
+}
 
 const tickerItems = [
   'api.zenstack.io',
@@ -67,24 +106,51 @@ const capabilities = [
 
 const pricing = [
   {
-    name: 'Launch',
-    price: '$49',
-    description: 'For small teams validating performance goals.',
-    items: ['Up to 5 services', 'Daily insights', 'Email alerts', 'Community support'],
+    pack: 'starter' as PackName,
+    name: 'Starter Pack',
+    price: '₹199',
+    description: 'Great for demos and assignment submissions.',
+    items: ['50,000 tokens', 'Realtime usage feed', 'Token transaction logs', 'Priority queue'],
   },
   {
-    name: 'Scale',
-    price: '$149',
-    description: 'For growing SaaS teams running multi-region workloads.',
-    items: ['Up to 25 services', 'Real-time insights', 'Advanced dashboards', 'Slack alerts'],
+    pack: 'growth' as PackName,
+    name: 'Growth Pack',
+    price: '₹499',
+    description: 'Best for active student teams and capstone builds.',
+    items: ['150,000 tokens', 'Realtime usage feed', 'Detailed billing history', 'Faster response SLA'],
     featured: true,
   },
   {
-    name: 'Enterprise',
-    price: 'Custom',
-    description: 'For platforms with strict SLAs and compliance needs.',
-    items: ['Unlimited services', 'Private SLAs', 'On-call response', 'Dedicated support'],
+    pack: 'pro' as PackName,
+    name: 'Pro Pack',
+    price: '₹999',
+    description: 'For production-ready demos and public showcases.',
+    items: ['400,000 tokens', 'Realtime balance updates', 'Webhook-safe credit flow', 'Premium support'],
   },
+];
+
+const tokenFlow = [
+  {
+    icon: WalletCards,
+    title: 'Start free with 10,000 tokens',
+    description: 'Every signup gets instant free tokens to test prediction and QoS routes.',
+  },
+  {
+    icon: Zap,
+    title: 'Pay only when you need more',
+    description: 'Top up through predefined packs or custom amount with Razorpay.',
+  },
+  {
+    icon: IndianRupee,
+    title: 'Transparent, token-wise billing',
+    description: 'Each API call logs debit/credit with balance snapshots and timestamps.',
+  },
+];
+
+const studentFit = [
+  'Production-style billing architecture with Supabase + Edge Functions',
+  'Portfolio-friendly real payment flow (test mode first)',
+  'Clear audit trail tables to explain in interviews and viva',
 ];
 
 const testimonials = [
@@ -116,8 +182,96 @@ const fadeUp = {
 };
 
 export default function Landing() {
+  const navigate = useNavigate();
   const { toast } = useToast();
   const [email, setEmail] = useState('');
+  const [checkoutLoading, setCheckoutLoading] = useState<Record<PackName, boolean>>({
+    starter: false,
+    growth: false,
+    pro: false,
+  });
+
+  const loadRazorpayScript = async () => {
+    if (window.Razorpay) return true;
+
+    return await new Promise<boolean>((resolve) => {
+      const script = document.createElement('script');
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      script.async = true;
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
+
+  const handleBuyTokens = async (pack: PackName) => {
+    setCheckoutLoading((prev) => ({ ...prev, [pack]: true }));
+
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        toast({
+          title: 'Login required',
+          description: 'Please login first to purchase tokens.',
+        });
+        navigate('/auth/login');
+        return;
+      }
+
+      const { data: orderData, error: orderError } = await supabase.functions.invoke('payments-create-order', {
+        body: { pack },
+      });
+
+      if (orderError) throw orderError;
+
+      const razorpayReady = await loadRazorpayScript();
+      if (!razorpayReady || !window.Razorpay) {
+        toast({
+          title: 'Order Created',
+          description: 'Razorpay checkout failed to load. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const razorpay = new window.Razorpay({
+        key: orderData.key,
+        amount: orderData.amount,
+        currency: orderData.currency,
+        name: 'QoSCollab',
+        description: `${pack.toUpperCase()} token top-up`,
+        order_id: orderData.orderId,
+        prefill: { email: user.email ?? undefined },
+        theme: { color: '#0ea5e9' },
+        handler: async (response: RazorpaySuccessResponse) => {
+          const { data: verifyData, error: verifyError } = await supabase.functions.invoke('payments-verify', {
+            body: response,
+          });
+
+          if (verifyError) throw verifyError;
+
+          toast({
+            title: 'Payment successful',
+            description: `Tokens credited. New balance: ${verifyData?.newBalance ?? 'updated'}`,
+          });
+        },
+      });
+
+      razorpay.open();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Could not start checkout';
+      toast({
+        title: 'Top-up failed',
+        description: message,
+        variant: 'destructive',
+      });
+    } finally {
+      setCheckoutLoading((prev) => ({ ...prev, [pack]: false }));
+    }
+  };
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -180,13 +334,14 @@ export default function Landing() {
 
             <motion.p {...fadeUp} className="max-w-xl text-lg text-slate-300">
               QoSCollab helps teams track service quality, predict risk, and ship faster with
-              a clear operational view of every endpoint.
+              a clear operational view of every endpoint and a token-wise billing system that is
+              simple enough for student projects and strong enough for real deployment.
             </motion.p>
 
             <motion.div {...fadeUp} className="flex flex-wrap gap-4">
               <Link to="/auth/register">
                 <Button size="lg" className="bg-sky-500 text-slate-950 hover:bg-sky-400">
-                  Start free trial
+                  Start free (10,000 tokens)
                   <ChevronRight className="ml-2 h-4 w-4" />
                 </Button>
               </Link>
@@ -364,9 +519,9 @@ export default function Landing() {
 
       <section className="container py-24">
         <motion.div {...fadeUp} className="text-center">
-          <p className="text-sm uppercase tracking-[0.3em] text-slate-400">Pricing</p>
-          <h3 className="mt-4 text-3xl font-semibold text-white">Plans that scale with you.</h3>
-          <p className="mt-4 text-slate-300">Simple tiers built for growing engineering teams.</p>
+          <p className="text-sm uppercase tracking-[0.3em] text-slate-400">Token Packs</p>
+          <h3 className="mt-4 text-3xl font-semibold text-white">Free tier + top-ups that feel fair.</h3>
+          <p className="mt-4 text-slate-300">Start at zero cost, then scale usage by tokens as your project grows.</p>
         </motion.div>
 
         <div className="mt-12 grid gap-6 lg:grid-cols-3">
@@ -392,18 +547,72 @@ export default function Landing() {
                     </div>
                   ))}
                   <Button
+                    type="button"
+                    onClick={() => void handleBuyTokens(plan.pack)}
+                    disabled={checkoutLoading[plan.pack]}
                     className={`mt-6 w-full ${
                       plan.featured
                         ? 'bg-sky-500 text-slate-950 hover:bg-sky-400'
                         : 'border border-white/20 bg-transparent text-white hover:border-sky-400'
                     }`}
                   >
-                    Choose plan
+                    {checkoutLoading[plan.pack] ? 'Starting checkout...' : 'Buy tokens'}
                   </Button>
                 </CardContent>
               </Card>
             </motion.div>
           ))}
+        </div>
+      </section>
+
+      <section className="bg-[#0b0d14] py-24">
+        <div className="container grid gap-10 lg:grid-cols-[1.1fr_0.9fr]">
+          <motion.div {...fadeUp}>
+            <p className="text-sm uppercase tracking-[0.3em] text-slate-400">Billing Flow</p>
+            <h3 className="mt-4 text-3xl font-semibold text-white">How token billing works in production.</h3>
+            <p className="mt-4 text-slate-300">
+              Built with atomic token deduction, idempotent credits, and realtime balance updates.
+              No manual refresh and no double-credit risk.
+            </p>
+            <div className="mt-8 grid gap-4">
+              {tokenFlow.map((item) => (
+                <div key={item.title} className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/20 text-sky-300">
+                      <item.icon className="h-4 w-4" />
+                    </span>
+                    <div>
+                      <p className="font-medium text-white">{item.title}</p>
+                      <p className="mt-1 text-sm text-slate-300">{item.description}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          <motion.div {...fadeUp} className="rounded-3xl border border-white/10 bg-white/5 p-8">
+            <p className="text-sm uppercase tracking-[0.3em] text-slate-400">Student Builder Fit</p>
+            <h4 className="mt-4 text-2xl font-semibold text-white">
+              Real-world architecture, beginner-friendly presentation.
+            </h4>
+            <div className="mt-6 space-y-3 text-sm text-slate-300">
+              {studentFit.map((item) => (
+                <div key={item} className="flex items-start gap-2">
+                  <Check className="mt-0.5 h-4 w-4 text-sky-400" />
+                  <span>{item}</span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-8">
+              <Link to="/qos/run-test">
+                <Button className="w-full bg-sky-500 text-slate-950 hover:bg-sky-400">
+                  Try live token-protected endpoint
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
+              </Link>
+            </div>
+          </motion.div>
         </div>
       </section>
 
@@ -476,9 +685,10 @@ export default function Landing() {
               GDPR compliant
             </div>
           </div>
-          <p>� {new Date().getFullYear()} QoSCollab</p>
+          <p>© {new Date().getFullYear()} QoSCollab</p>
         </div>
       </footer>
     </div>
   );
 }
+

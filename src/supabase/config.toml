@@ -23,3 +23,15 @@ verify_jwt = false
 
 [functions.create-web-service]
 verify_jwt = true
+
+[functions.token-check-demo]
+verify_jwt = true
+
+[functions.payments-create-order]
+verify_jwt = true
+
+[functions.payments-verify]
+verify_jwt = true
+
+[functions.payments-webhook]
+verify_jwt = false
