@@ -11,6 +11,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { PredictionForm, PredictionFormValues } from "@/components/PredictionForm";
 import { StatWidget } from "@/components/StatWidget";
 import { DashboardCard } from "@/components/DashboardCard";
+import { authFetch } from "@/lib/live-token";
 
 const ML_API_URL = (import.meta.env.VITE_ML_API_URL as string | undefined)?.trim();
 const ML_API_TIMEOUT_MS = 12000;
@@ -124,7 +125,7 @@ export default function Predict() {
     const timeout = setTimeout(() => controller.abort(), ML_API_TIMEOUT_MS);
 
     try {
-      const response = await fetch(ML_API_URL, {
+      const response = await authFetch(ML_API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Search, Filter, Sparkles, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithLiveToken } from "@/lib/live-token";
 import { PredictionForm, PredictionFormValues } from "@/components/PredictionForm";
 import { DashboardCard } from "@/components/DashboardCard";
 import { ServiceCard } from "@/components/recommendations/ServiceCard";
@@ -207,7 +208,7 @@ export default function Recommendations() {
   const handleSubmit = async (values: PredictionFormValues) => {
     setSubmitting(true);
     try {
-      const { data, error } = await supabase.functions.invoke("predict-qos", {
+      const { data, error } = await invokeWithLiveToken("predict-qos", {
         body: {
           service_id: values.service_id ?? null,
           latency: values.latency,
@@ -409,3 +410,4 @@ export default function Recommendations() {
     </div>
   );
 }
+

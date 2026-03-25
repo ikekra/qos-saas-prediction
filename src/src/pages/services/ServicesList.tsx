@@ -10,10 +10,14 @@ import { useToast } from '@/hooks/use-toast';
 import { Header } from '@/components/Header';
 import { ServiceCard } from '@/components/ServiceCard';
 import { Badge } from '@/components/ui/badge';
+import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-token';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
+import { getOperationCost } from '@/lib/token-usage';
 
 export default function ServicesList() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { tokenUsage, refreshTokenUsage } = useTokenUsage();
   const [services, setServices] = useState<any[]>([]);
   const [filteredServices, setFilteredServices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,14 +50,27 @@ export default function ServicesList() {
 
   const fetchServices = async () => {
     try {
-      const { data, error } = await supabase
+      const activeQuery = await supabase
         .from('web_services')
         .select('id, name, category, provider, description, logo_url, availability_score, base_latency_estimate, base_url, docs_url, is_active')
         .eq('is_active', true)
         .order('availability_score', { ascending: false });
 
-      if (error) throw error;
-      setServices(data || []);
+      if (activeQuery.error) throw activeQuery.error;
+
+      if ((activeQuery.data || []).length > 0) {
+        setServices(activeQuery.data || []);
+        return;
+      }
+
+      // Fallback: show all services if is_active flag is missing/false in inserted rows.
+      const allQuery = await supabase
+        .from('web_services')
+        .select('id, name, category, provider, description, logo_url, availability_score, base_latency_estimate, base_url, docs_url, is_active')
+        .order('availability_score', { ascending: false });
+
+      if (allQuery.error) throw allQuery.error;
+      setServices(allQuery.data || []);
     } catch (error: any) {
       toast({
         title: 'Error loading services',
@@ -218,8 +235,20 @@ export default function ServicesList() {
 
     setRunningId(service.id);
     try {
+      const requiredTokens =
+        getOperationCost('latency') + getOperationCost('throughput') + getOperationCost('uptime');
+      if (tokenUsage.balance < requiredTokens) {
+        toast({
+          title: 'Insufficient tokens',
+          description: `Live test needs ${requiredTokens} tokens. Please top up first.`,
+          variant: 'destructive',
+        });
+        navigate('/profile');
+        return;
+      }
+
       const runTest = async (testType: 'latency' | 'throughput' | 'uptime') => {
-        const { data, error } = await supabase.functions.invoke('run-qos-test', {
+        const { data, error } = await invokeWithLiveToken('run-qos-test', {
           body: { serviceUrl: testUrl, testType },
         });
         if (error) throw error;
@@ -251,12 +280,14 @@ export default function ServicesList() {
 
       toast({
         title: 'Live tests completed',
-        description: `Latency ${Math.round(merged.latency)}ms · Uptime ${merged.uptime.toFixed(1)}%`,
+        description: `Latency ${Math.round(merged.latency)}ms | Uptime ${merged.uptime.toFixed(1)}%`,
       });
+      await refreshTokenUsage();
     } catch (error: any) {
+      const message = await extractFunctionErrorMessage(error, 'Unable to run test.');
       toast({
         title: 'Live test failed',
-        description: error.message || 'Unable to run test.',
+        description: message,
         variant: 'destructive',
       });
     } finally {
@@ -385,3 +416,4 @@ export default function ServicesList() {
     </div>
   );
 }
+

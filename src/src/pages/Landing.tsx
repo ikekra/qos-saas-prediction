@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-token';
 
 type PackName = 'starter' | 'growth' | 'pro';
 
@@ -108,24 +109,24 @@ const pricing = [
   {
     pack: 'starter' as PackName,
     name: 'Starter Pack',
-    price: '₹199',
+    price: 'Rs 199',
     description: 'Great for demos and assignment submissions.',
-    items: ['50,000 tokens', 'Realtime usage feed', 'Token transaction logs', 'Priority queue'],
+    items: ['5,000 tokens', 'Realtime usage feed', 'Token transaction logs', 'Priority queue'],
   },
   {
     pack: 'growth' as PackName,
     name: 'Growth Pack',
-    price: '₹499',
+    price: 'Rs 499',
     description: 'Best for active student teams and capstone builds.',
-    items: ['150,000 tokens', 'Realtime usage feed', 'Detailed billing history', 'Faster response SLA'],
+    items: ['15,000 tokens', 'Realtime usage feed', 'Detailed billing history', 'Faster response SLA'],
     featured: true,
   },
   {
     pack: 'pro' as PackName,
     name: 'Pro Pack',
-    price: '₹999',
+    price: 'Rs 1499',
     description: 'For production-ready demos and public showcases.',
-    items: ['400,000 tokens', 'Realtime balance updates', 'Webhook-safe credit flow', 'Premium support'],
+    items: ['50,000 tokens', 'Realtime balance updates', 'Webhook-safe credit flow', 'Premium support'],
   },
 ];
 
@@ -221,11 +222,40 @@ export default function Landing() {
         return;
       }
 
-      const { data: orderData, error: orderError } = await supabase.functions.invoke('payments-create-order', {
+      const { data: orderData, error: orderError } = await invokeWithLiveToken('payments-create-order', {
         body: { pack },
       });
 
       if (orderError) throw orderError;
+      if ((orderData as { error?: string } | null)?.error) {
+        throw new Error((orderData as { error?: string }).error);
+      }
+
+      if (orderData?.isMockAutoVerified) {
+        toast({
+          title: 'Mock top-up successful',
+          description: `Tokens credited. New balance: ${orderData?.newBalance ?? 'updated'}`,
+        });
+        return;
+      }
+
+      if (orderData?.isMock) {
+        const { data: verifyData, error: verifyError } = await invokeWithLiveToken('payments-verify', {
+          body: {
+            razorpay_order_id: orderData.orderId,
+            razorpay_payment_id: `mock_payment_${crypto.randomUUID()}`,
+            razorpay_signature: 'mock_signature',
+          },
+        });
+
+        if (verifyError) throw verifyError;
+
+        toast({
+          title: 'Mock top-up successful',
+          description: `Tokens credited. New balance: ${verifyData?.newBalance ?? 'updated'}`,
+        });
+        return;
+      }
 
       const razorpayReady = await loadRazorpayScript();
       if (!razorpayReady || !window.Razorpay) {
@@ -247,11 +277,14 @@ export default function Landing() {
         prefill: { email: user.email ?? undefined },
         theme: { color: '#0ea5e9' },
         handler: async (response: RazorpaySuccessResponse) => {
-          const { data: verifyData, error: verifyError } = await supabase.functions.invoke('payments-verify', {
+          const { data: verifyData, error: verifyError } = await invokeWithLiveToken('payments-verify', {
             body: response,
           });
 
           if (verifyError) throw verifyError;
+          if ((verifyData as { error?: string } | null)?.error) {
+            throw new Error((verifyData as { error?: string }).error);
+          }
 
           toast({
             title: 'Payment successful',
@@ -262,7 +295,7 @@ export default function Landing() {
 
       razorpay.open();
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Could not start checkout';
+      const message = await extractFunctionErrorMessage(error, 'Could not start checkout');
       toast({
         title: 'Top-up failed',
         description: message,
@@ -526,7 +559,7 @@ export default function Landing() {
 
         <div className="mt-12 grid gap-6 lg:grid-cols-3">
           {pricing.map((plan) => (
-            <motion.div key={plan.name} {...fadeUp}>
+            <motion.div key={plan.name} {...fadeUp} whileHover={{ y: -6 }} transition={{ duration: 0.2 }}>
               <Card
                 className={`h-full border ${
                   plan.featured
@@ -685,10 +718,12 @@ export default function Landing() {
               GDPR compliant
             </div>
           </div>
-          <p>© {new Date().getFullYear()} QoSCollab</p>
+          <p>(c) {new Date().getFullYear()} QoSCollab</p>
         </div>
       </footer>
     </div>
   );
 }
+
+
 

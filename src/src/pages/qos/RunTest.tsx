@@ -6,9 +6,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Play } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-token';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
+import { getOperationCost } from '@/lib/token-usage';
 
 export default function RunTest() {
   const navigate = useNavigate();
@@ -18,6 +21,7 @@ export default function RunTest() {
   const [orderLoading, setOrderLoading] = useState(false);
   const [serviceUrl, setServiceUrl] = useState('');
   const [testType, setTestType] = useState<'latency' | 'load' | 'uptime' | 'throughput'>('latency');
+  const { tokenUsage, refreshTokenUsage } = useTokenUsage();
 
   const handleRunTest = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,9 +37,19 @@ export default function RunTest() {
 
     try {
       setLoading(true);
+      const requiredTokens = getOperationCost(testType);
+      if (tokenUsage.balance < requiredTokens) {
+        toast({
+          title: "Insufficient tokens",
+          description: `You need ${requiredTokens} tokens for this test. Please top up.`,
+          variant: "destructive",
+        });
+        navigate('/profile');
+        return;
+      }
 
       // Call edge function to run test
-      const { data, error } = await supabase.functions.invoke('run-qos-test', {
+      const { error } = await invokeWithLiveToken('run-qos-test', {
         body: { serviceUrl, testType }
       });
 
@@ -45,13 +59,15 @@ export default function RunTest() {
         title: "Test Completed",
         description: `${testType.charAt(0).toUpperCase() + testType.slice(1)} test completed successfully`,
       });
+      await refreshTokenUsage();
 
       // Navigate to reports page
       navigate('/qos/reports');
     } catch (error: any) {
+      const message = await extractFunctionErrorMessage(error, "Failed to run test");
       toast({
         title: "Test Failed",
-        description: error.message || "Failed to run test",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -62,22 +78,27 @@ export default function RunTest() {
   const handleTokenCheckTest = async () => {
     try {
       setTokenCheckLoading(true);
-      const { data, error } = await supabase.functions.invoke("token-check-demo", {
+      const { data, error } = await invokeWithLiveToken("token-check-demo", {
         body: {},
       });
 
       if (error) {
         throw error;
       }
+      if ((data as { error?: string } | null)?.error) {
+        throw new Error((data as { error?: string }).error);
+      }
 
       toast({
         title: "Token Deducted",
-        description: `Deducted ${data?.deducted ?? 500} tokens. Balance: ${data?.balance ?? "-"}`,
+        description: `Deducted ${data?.deducted ?? 500} tokens. Balance: ${data?.balance ?? "-"}${data?.mode ? ` (${data.mode})` : ""}`,
       });
+      await refreshTokenUsage();
     } catch (error: any) {
+      const message = await extractFunctionErrorMessage(error, "Could not call token-check-demo");
       toast({
         title: "Token Check Failed",
-        description: error?.message || "Could not call token-check-demo",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -88,12 +109,48 @@ export default function RunTest() {
   const handleCreateOrderTest = async () => {
     try {
       setOrderLoading(true);
-      const { data, error } = await supabase.functions.invoke("payments-create-order", {
+      const { data, error } = await invokeWithLiveToken("payments-create-order", {
         body: { pack: "starter" },
       });
 
       if (error) {
         throw error;
+      }
+      if ((data as { error?: string } | null)?.error) {
+        throw new Error((data as { error?: string }).error);
+      }
+
+      if (data?.isMockAutoVerified) {
+        toast({
+          title: "Mock Payment Verified",
+          description: `Tokens credited. New balance: ${data?.newBalance ?? "-"}`,
+        });
+        await refreshTokenUsage();
+        return;
+      }
+
+      if (data?.isMock) {
+        const { data: verifyData, error: verifyError } = await invokeWithLiveToken("payments-verify", {
+          body: {
+            razorpay_order_id: data.orderId,
+            razorpay_payment_id: `mock_payment_${crypto.randomUUID()}`,
+            razorpay_signature: "mock_signature",
+          },
+        });
+
+        if (verifyError) {
+          throw verifyError;
+        }
+        if ((verifyData as { error?: string } | null)?.error) {
+          throw new Error((verifyData as { error?: string }).error);
+        }
+
+        toast({
+          title: "Mock Payment Verified",
+          description: `Tokens credited. New balance: ${verifyData?.newBalance ?? "-"}`,
+        });
+        await refreshTokenUsage();
+        return;
       }
 
       toast({
@@ -101,9 +158,10 @@ export default function RunTest() {
         description: `Order: ${data?.orderId ?? "-"} | Amount: ${data?.amount ?? "-"} paise | Tokens: ${data?.tokensPurchased ?? "-"}`,
       });
     } catch (error: any) {
+      const message = await extractFunctionErrorMessage(error, "Could not call payments-create-order");
       toast({
         title: "Create Order Failed",
-        description: error?.message || "Could not call payments-create-order",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -121,15 +179,26 @@ export default function RunTest() {
           <div className="absolute top-40 -left-10 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
           <div className="absolute bottom-10 right-10 h-80 w-80 rounded-full bg-primary/5 blur-3xl" />
         </div>
-        <div className="mx-auto max-w-2xl">
-          <div className="mb-8 animate-fade-in">
+        <motion.div
+          className="mx-auto max-w-2xl"
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.45 }}
+        >
+          <div className="mb-8">
             <h1 className="text-4xl font-bold mb-2">Run Performance Test</h1>
             <p className="text-muted-foreground">
               Test your web service performance with automated QoS analysis
             </p>
+            <div className="mt-3 inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
+              Live test orchestration
+            </div>
+            <div className="mt-3 text-sm text-muted-foreground">
+              Current token balance: <span className="font-semibold text-foreground">{new Intl.NumberFormat('en-IN').format(tokenUsage.balance)}</span>
+            </div>
           </div>
 
-          <Card className="shadow-medium animate-slide-up">
+          <Card className="shadow-medium hover-scale">
             <CardHeader>
               <CardTitle>Test Configuration</CardTitle>
               <CardDescription>
@@ -174,7 +243,12 @@ export default function RunTest() {
                   </p>
                 </div>
 
-                <Button type="submit" disabled={loading} className="w-full" size="lg">
+                <Button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0"
+                  size="lg"
+                >
                   {loading ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -191,7 +265,7 @@ export default function RunTest() {
                 <Button
                   type="button"
                   variant="outline"
-                  className="w-full"
+                  className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0"
                   onClick={handleTokenCheckTest}
                   disabled={tokenCheckLoading}
                 >
@@ -208,7 +282,7 @@ export default function RunTest() {
                 <Button
                   type="button"
                   variant="secondary"
-                  className="w-full"
+                  className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0"
                   onClick={handleCreateOrderTest}
                   disabled={orderLoading}
                 >
@@ -226,7 +300,7 @@ export default function RunTest() {
           </Card>
 
           <div className="mt-8 grid gap-4 md:grid-cols-2">
-            <Card className="gradient-card shadow-soft">
+            <Card className="gradient-card shadow-soft hover-scale">
               <CardHeader>
                 <CardTitle className="text-lg">Test Accuracy</CardTitle>
                 <CardDescription>
@@ -234,7 +308,7 @@ export default function RunTest() {
                 </CardDescription>
               </CardHeader>
             </Card>
-            <Card className="gradient-card shadow-soft">
+            <Card className="gradient-card shadow-soft hover-scale">
               <CardHeader>
                 <CardTitle className="text-lg">Historical Data</CardTitle>
                 <CardDescription>
@@ -243,8 +317,9 @@ export default function RunTest() {
               </CardHeader>
             </Card>
           </div>
-        </div>
+        </motion.div>
       </div>
     </div>
   );
 }
+

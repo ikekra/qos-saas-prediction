@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Header } from '@/components/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-token';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { GitCompare, Zap, RefreshCw, Search, Filter } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
+import { getOperationCost } from '@/lib/token-usage';
 
 type WebService = {
   id: string;
@@ -41,6 +45,8 @@ type LiveMetric = {
 
 export default function CompareServices() {
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const { tokenUsage, refreshTokenUsage } = useTokenUsage();
   const [services, setServices] = useState<WebService[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [liveMetrics, setLiveMetrics] = useState<Record<string, LiveMetric>>({});
@@ -144,6 +150,19 @@ export default function CompareServices() {
 
     setComparing(true);
     try {
+      const requiredPerService =
+        getOperationCost('latency') + getOperationCost('throughput') + getOperationCost('uptime');
+      const requiredTokens = selectedIds.length * requiredPerService;
+      if (tokenUsage.balance < requiredTokens) {
+        toast({
+          title: 'Insufficient tokens',
+          description: `Comparison needs ${requiredTokens} tokens. Please top up first.`,
+          variant: 'destructive',
+        });
+        navigate('/profile');
+        return;
+      }
+
       const selectedServices = services.filter((service) => selectedIds.includes(service.id));
 
       const results = await Promise.all(
@@ -158,7 +177,7 @@ export default function CompareServices() {
           }
 
           const runTest = async (testType: 'latency' | 'throughput' | 'uptime') => {
-            const { data, error } = await supabase.functions.invoke('run-qos-test', {
+            const { data, error } = await invokeWithLiveToken('run-qos-test', {
               body: { serviceUrl: testUrl, testType },
             });
             if (error) throw error;
@@ -213,13 +232,15 @@ export default function CompareServices() {
           description: 'Live metrics updated for selected services.',
         });
       }
+      await refreshTokenUsage();
 
       // Scroll results into view after compare
       resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (error: any) {
+      const message = await extractFunctionErrorMessage(error, 'Failed to compare services');
       toast({
         title: 'Error',
-        description: error.message || 'Failed to compare services',
+        description: message,
         variant: 'destructive',
       });
     } finally {
@@ -746,3 +767,4 @@ export default function CompareServices() {
     </div>
   );
 }
+

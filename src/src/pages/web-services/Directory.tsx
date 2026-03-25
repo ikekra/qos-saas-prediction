@@ -34,14 +34,26 @@ export default function WebServicesDirectory() {
   useEffect(() => {
     const fetchServices = async () => {
       try {
-        const { data, error } = await supabase
+        const activeQuery = await supabase
           .from("web_services")
           .select("id, name, category, logo_url, provider, description, availability_score")
           .eq("is_active", true)
           .order("availability_score", { ascending: false });
 
-        if (error) throw error;
-        setServices((data || []) as WebService[]);
+        if (activeQuery.error) throw activeQuery.error;
+
+        if ((activeQuery.data || []).length > 0) {
+          setServices((activeQuery.data || []) as WebService[]);
+          return;
+        }
+
+        const allQuery = await supabase
+          .from("web_services")
+          .select("id, name, category, logo_url, provider, description, availability_score")
+          .order("availability_score", { ascending: false });
+
+        if (allQuery.error) throw allQuery.error;
+        setServices((allQuery.data || []) as WebService[]);
       } catch (error: any) {
         toast({
           title: "Error loading directory",

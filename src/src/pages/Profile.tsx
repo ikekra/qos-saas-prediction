@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { User, Mail, Building, Heart, TestTube, Star, Sparkles, Wallet, Coins, ReceiptText } from 'lucide-react';
+import { User, Mail, Building, Heart, TestTube, Star, Sparkles, Wallet, Coins, ReceiptText, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,6 +14,9 @@ import { Header } from '@/components/Header';
 import { ServiceCard } from '@/components/ServiceCard';
 import { ScrollableRow } from '@/components/ScrollableRow';
 import { requireUser } from '@/lib/auth';
+import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-token';
+import { Progress } from '@/components/ui/progress';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
 
 type UserSubscription = {
   token_balance: number;
@@ -90,17 +93,97 @@ export default function Profile() {
   const [subscription, setSubscription] = useState<UserSubscription | null>(null);
   const [tokenTransactions, setTokenTransactions] = useState<TokenTransaction[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
+  const [subscriptionRefreshing, setSubscriptionRefreshing] = useState(false);
+  const [tokenRealtimeStatus, setTokenRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
   const [topUpLoading, setTopUpLoading] = useState<Record<PackName, boolean>>({
     starter: false,
     growth: false,
     pro: false,
   });
+  const { tokenUsage, usagePercent, refreshTokenUsage, balanceUpdatedAt, balanceRecentlyUpdated } = useTokenUsage();
+  const tokenChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const tokenRefreshTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     fetchProfile();
     fetchUserActivity();
     fetchSubscriptionData();
   }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const scheduleRefresh = () => {
+      if (tokenRefreshTimerRef.current) window.clearTimeout(tokenRefreshTimerRef.current);
+      tokenRefreshTimerRef.current = window.setTimeout(() => {
+        void fetchSubscriptionData();
+      }, 250);
+    };
+
+    const setupRealtime = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!mounted || !user) return;
+
+      if (tokenChannelRef.current) {
+        supabase.removeChannel(tokenChannelRef.current);
+      }
+
+      const channel = supabase
+        .channel(`token-live-${user.id}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'user_profiles', filter: `id=eq.${user.id}` },
+          scheduleRefresh,
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'token_transactions', filter: `user_id=eq.${user.id}` },
+          scheduleRefresh,
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'payments', filter: `user_id=eq.${user.id}` },
+          scheduleRefresh,
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setTokenRealtimeStatus('connected');
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setTokenRealtimeStatus('reconnecting');
+            return;
+          }
+          if (status === 'CLOSED') {
+            setTokenRealtimeStatus('disconnected');
+          }
+        });
+
+      tokenChannelRef.current = channel;
+    };
+
+    setupRealtime();
+
+    return () => {
+      mounted = false;
+      if (tokenRefreshTimerRef.current) window.clearTimeout(tokenRefreshTimerRef.current);
+      if (tokenChannelRef.current) supabase.removeChannel(tokenChannelRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const hasPendingPayment = paymentHistory.some((payment) => payment.status === 'pending');
+    if (!hasPendingPayment) return;
+
+    const poller = setInterval(() => {
+      void fetchSubscriptionData();
+    }, 5000);
+
+    return () => clearInterval(poller);
+  }, [paymentHistory]);
 
   useEffect(() => {
     if (!banner) return;
@@ -195,6 +278,7 @@ export default function Profile() {
   };
 
   const fetchSubscriptionData = async () => {
+    setSubscriptionRefreshing(true);
     try {
       const {
         data: { user },
@@ -234,6 +318,8 @@ export default function Profile() {
       }
     } catch (error) {
       console.error('Error fetching subscription details:', error);
+    } finally {
+      setSubscriptionRefreshing(false);
     }
   };
 
@@ -260,10 +346,42 @@ export default function Profile() {
     try {
       const user = await requireUser();
 
-      const { data: orderData, error: orderError } = await supabase.functions.invoke('payments-create-order', {
+      const { data: orderData, error: orderError } = await invokeWithLiveToken('payments-create-order', {
         body: { pack },
       });
       if (orderError) throw orderError;
+      if ((orderData as { error?: string } | null)?.error) {
+        throw new Error((orderData as { error?: string }).error);
+      }
+
+      if (orderData?.isMockAutoVerified) {
+        toast({
+          title: 'Mock top-up successful',
+          description: `Tokens credited. New balance: ${orderData?.newBalance ?? 'updated'}`,
+        });
+        await fetchSubscriptionData();
+        await refreshTokenUsage();
+        return;
+      }
+
+      if (orderData?.isMock) {
+        const { error: verifyError } = await invokeWithLiveToken('payments-verify', {
+          body: {
+            razorpay_order_id: orderData.orderId,
+            razorpay_payment_id: `mock_payment_${crypto.randomUUID()}`,
+            razorpay_signature: 'mock_signature',
+          },
+        });
+        if (verifyError) throw verifyError;
+
+        toast({
+          title: 'Mock top-up successful',
+          description: 'Tokens credited instantly in mock mode.',
+        });
+        await fetchSubscriptionData();
+        await refreshTokenUsage();
+        return;
+      }
 
       const razorpayReady = await loadRazorpayScript();
       if (!razorpayReady || !window.Razorpay) {
@@ -285,27 +403,32 @@ export default function Profile() {
         prefill: { email: user.email ?? undefined },
         theme: { color: '#0ea5e9' },
         handler: async (response: RazorpaySuccessResponse) => {
-          const { error: verifyError } = await supabase.functions.invoke('payments-verify', {
+          const { data: verifyData, error: verifyError } = await invokeWithLiveToken('payments-verify', {
             body: response,
           });
           if (verifyError) throw verifyError;
+          if ((verifyData as { error?: string } | null)?.error) {
+            throw new Error((verifyData as { error?: string }).error);
+          }
 
           toast({
             title: 'Top-up successful',
             description: 'Payment verified and tokens credited.',
           });
           await fetchSubscriptionData();
+          await refreshTokenUsage();
         },
       });
 
       razorpay.open();
     } catch (error: any) {
+      const message = await extractFunctionErrorMessage(error, 'Could not start token top-up.');
       if (error?.message?.includes('Authentication')) {
         navigate('/auth/login');
       }
       toast({
         title: 'Top-up failed',
-        description: error?.message || 'Could not start token top-up.',
+        description: message,
         variant: 'destructive',
       });
     } finally {
@@ -367,6 +490,8 @@ export default function Profile() {
     );
   }
 
+  const hasPendingPayment = paymentHistory.some((payment) => payment.status === 'pending');
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -422,7 +547,7 @@ export default function Profile() {
             </TabsList>
 
             <TabsContent value="profile">
-              <Card className="brand-card">
+              <Card className="brand-card hover-scale">
                 <CardHeader>
                   <CardTitle>Profile Information</CardTitle>
                   <CardDescription>Update your personal information</CardDescription>
@@ -488,8 +613,20 @@ export default function Profile() {
 
             <TabsContent value="subscription">
               <div className="space-y-6">
+                {hasPendingPayment && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="rounded-lg border border-amber-300/50 bg-amber-50 px-4 py-3 text-amber-800"
+                  >
+                    <p className="flex items-center gap-2 text-sm font-medium">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Payment is processing. Auto-refresh is active.
+                    </p>
+                  </motion.div>
+                )}
                 <div className="grid gap-4 md:grid-cols-3">
-                  <Card className="brand-card">
+                  <Card className="brand-card hover-scale">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base flex items-center gap-2">
                         <Wallet className="h-4 w-4" />
@@ -497,12 +634,20 @@ export default function Profile() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <p className="text-3xl font-semibold">{formatNumber(subscription?.token_balance || 0)}</p>
+                      <p className="text-3xl font-semibold">
+                        <span className={balanceRecentlyUpdated ? "text-emerald-600 transition-colors" : ""}>
+                          {subscriptionRefreshing ? <span className="inline-block h-8 w-24 rounded-md shimmer" /> : formatNumber(tokenUsage.balance || 0)}
+                        </span>
+                      </p>
                       <p className="text-xs text-muted-foreground mt-1">Available tokens</p>
+                      <p className="text-xs mt-1 text-emerald-700">
+                        {balanceUpdatedAt ? `Updated ${new Date(balanceUpdatedAt).toLocaleTimeString()}` : "Waiting for sync"}
+                      </p>
+                      {tokenUsage.stale && <p className="text-xs text-amber-600">May be outdated</p>}
                     </CardContent>
                   </Card>
 
-                  <Card className="brand-card">
+                  <Card className="brand-card hover-scale">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base flex items-center gap-2">
                         <Coins className="h-4 w-4" />
@@ -510,12 +655,14 @@ export default function Profile() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <p className="text-3xl font-semibold">{formatNumber(subscription?.lifetime_tokens_used || 0)}</p>
+                      <p className="text-3xl font-semibold">
+                        {subscriptionRefreshing ? <span className="inline-block h-8 w-24 rounded-md shimmer" /> : formatNumber(tokenUsage.lifetimeUsed || 0)}
+                      </p>
                       <p className="text-xs text-muted-foreground mt-1">Total consumed tokens</p>
                     </CardContent>
                   </Card>
 
-                  <Card className="brand-card">
+                  <Card className="brand-card hover-scale">
                     <CardHeader className="pb-3">
                       <CardTitle className="text-base flex items-center gap-2">
                         <ReceiptText className="h-4 w-4" />
@@ -529,25 +676,83 @@ export default function Profile() {
                   </Card>
                 </div>
 
-                <Card className="brand-card">
+                <Card className="brand-card hover-scale">
                   <CardHeader>
                     <CardTitle>Top Up Tokens</CardTitle>
                     <CardDescription>Buy additional tokens when your balance is low</CardDescription>
+                    <p className="text-xs mt-1">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ${
+                          tokenRealtimeStatus === 'connected'
+                            ? 'bg-emerald-100 text-emerald-700'
+                            : tokenRealtimeStatus === 'reconnecting'
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-muted text-muted-foreground'
+                        }`}
+                      >
+                        Live sync: {tokenRealtimeStatus}
+                      </span>
+                    </p>
                   </CardHeader>
                   <CardContent className="grid gap-3 md:grid-cols-3">
-                    <Button type="button" onClick={() => void handleTopUp('starter')} disabled={topUpLoading.starter}>
-                      {topUpLoading.starter ? 'Starting...' : 'Starter ₹199'}
+                    <Button type="button" variant="ghost" className="md:col-span-3 justify-start" onClick={() => navigate('/settings/billing?topup=1')}>
+                      Open detailed top-up form
                     </Button>
-                    <Button type="button" variant="secondary" onClick={() => void handleTopUp('growth')} disabled={topUpLoading.growth}>
-                      {topUpLoading.growth ? 'Starting...' : 'Growth ₹499'}
+                    <Button type="button" className="transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0" onClick={() => void handleTopUp('starter')} disabled={topUpLoading.starter}>
+                      {topUpLoading.starter ? 'Starting...' : 'Starter Rs 199'}
                     </Button>
-                    <Button type="button" variant="outline" onClick={() => void handleTopUp('pro')} disabled={topUpLoading.pro}>
-                      {topUpLoading.pro ? 'Starting...' : 'Pro ₹999'}
+                    <Button type="button" variant="secondary" className="transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0" onClick={() => void handleTopUp('growth')} disabled={topUpLoading.growth}>
+                      {topUpLoading.growth ? 'Starting...' : 'Growth Rs 499'}
+                    </Button>
+                    <Button type="button" variant="outline" className="transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0" onClick={() => void handleTopUp('pro')} disabled={topUpLoading.pro}>
+                      {topUpLoading.pro ? 'Starting...' : 'Pro Rs 1499'}
                     </Button>
                   </CardContent>
                 </Card>
 
-                <Card className="brand-card">
+                <Card className="brand-card hover-scale">
+                  <CardHeader>
+                    <CardTitle>Token Usage (Billing Cycle)</CardTitle>
+                    <CardDescription>
+                      {new Intl.NumberFormat('en-IN').format(tokenUsage.cycleUsed)} / {new Intl.NumberFormat('en-IN').format(tokenUsage.cycleLimit)} tokens used
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <Progress value={usagePercent} />
+                    <p className="text-sm text-muted-foreground">
+                      You've run {tokenUsage.weeklyLatencyTests} latency tests ({new Intl.NumberFormat('en-IN').format(tokenUsage.weeklyLatencyTokens)} tokens) this week.
+                    </p>
+                    {tokenUsage.stale && (
+                      <p className="text-xs text-amber-600">Showing last known token state (stale data).</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="brand-card hover-scale">
+                  <CardHeader>
+                    <CardTitle>Per-Service Token Spend</CardTitle>
+                    <CardDescription>Current billing cycle breakdown by monitored endpoint</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {tokenUsage.perServiceSpend.length > 0 ? (
+                      <div className="space-y-3">
+                        {tokenUsage.perServiceSpend.map((row) => (
+                          <div key={row.service} className="flex items-center justify-between rounded-lg bg-muted/50 p-3">
+                            <div>
+                              <p className="font-medium truncate max-w-[280px]">{row.service}</p>
+                              <p className="text-xs text-muted-foreground">{row.tests} tests</p>
+                            </div>
+                            <p className="text-sm font-semibold">{new Intl.NumberFormat('en-IN').format(row.tokens)} tokens</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-center text-muted-foreground py-8">No per-service spend yet</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card className="brand-card hover-scale">
                   <CardHeader>
                     <CardTitle>Recent Token Activity</CardTitle>
                     <CardDescription>Latest debits and credits from your account</CardDescription>
@@ -555,8 +760,14 @@ export default function Profile() {
                   <CardContent>
                     {tokenTransactions.length > 0 ? (
                       <div className="space-y-3">
-                        {tokenTransactions.map((tx) => (
-                          <div key={tx.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                        {tokenTransactions.map((tx, index) => (
+                          <motion.div
+                            key={tx.id}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.2, delay: index * 0.03 }}
+                            className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
+                          >
                             <div>
                               <p className="font-medium">
                                 <span className={tx.type === 'credit' ? 'text-emerald-600' : 'text-rose-600'}>
@@ -565,11 +776,11 @@ export default function Profile() {
                                 tokens
                               </p>
                               <p className="text-sm text-muted-foreground">
-                                {tx.description} {tx.endpoint ? `• ${tx.endpoint}` : ''} • Balance: {formatNumber(tx.balance_after)}
+                                {tx.description} {tx.endpoint ? `- ${tx.endpoint}` : ''} - Balance: {formatNumber(tx.balance_after)}
                               </p>
                             </div>
                             <div className="text-sm text-muted-foreground">{new Date(tx.created_at).toLocaleString()}</div>
-                          </div>
+                          </motion.div>
                         ))}
                       </div>
                     ) : (
@@ -578,7 +789,7 @@ export default function Profile() {
                   </CardContent>
                 </Card>
 
-                <Card className="brand-card">
+                <Card className="brand-card hover-scale">
                   <CardHeader>
                     <CardTitle>Recent Top-ups</CardTitle>
                     <CardDescription>Your latest payment attempts and statuses</CardDescription>
@@ -586,11 +797,17 @@ export default function Profile() {
                   <CardContent>
                     {paymentHistory.length > 0 ? (
                       <div className="space-y-3">
-                        {paymentHistory.map((payment) => (
-                          <div key={payment.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                        {paymentHistory.map((payment, index) => (
+                          <motion.div
+                            key={payment.id}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.2, delay: index * 0.03 }}
+                            className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
+                          >
                             <div>
                               <p className="font-medium">
-                                {formatRupeesFromPaise(payment.amount_in_paise)} • {formatNumber(payment.tokens_purchased)} tokens
+                                {formatRupeesFromPaise(payment.amount_in_paise)} - {formatNumber(payment.tokens_purchased)} tokens
                               </p>
                               <p className="text-sm text-muted-foreground">
                                 Pack: {payment.pack_name || 'custom'}
@@ -610,7 +827,7 @@ export default function Profile() {
                               </p>
                               <p className="text-xs text-muted-foreground">{new Date(payment.created_at).toLocaleDateString()}</p>
                             </div>
-                          </div>
+                          </motion.div>
                         ))}
                       </div>
                     ) : (
@@ -623,7 +840,7 @@ export default function Profile() {
 
             <TabsContent value="activity">
               <div className="space-y-6">
-                <Card className="brand-card">
+                <Card className="brand-card hover-scale">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <TestTube className="h-5 w-5" />
@@ -638,7 +855,7 @@ export default function Profile() {
                             <div>
                               <p className="font-medium">{test.service_url || 'Unknown Service'}</p>
                               <p className="text-sm text-muted-foreground">
-                                {test.test_type} • {test.latency}ms
+                                {test.test_type} - {test.latency}ms
                               </p>
                             </div>
                             <div className="text-sm text-muted-foreground">
@@ -653,7 +870,7 @@ export default function Profile() {
                   </CardContent>
                 </Card>
 
-                <Card className="brand-card">
+                <Card className="brand-card hover-scale">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <Star className="h-5 w-5" />
@@ -691,7 +908,7 @@ export default function Profile() {
             </TabsContent>
 
             <TabsContent value="favorites">
-              <Card className="brand-card">
+              <Card className="brand-card hover-scale">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Heart className="h-5 w-5" />
@@ -724,3 +941,5 @@ export default function Profile() {
     </div>
   );
 }
+
+

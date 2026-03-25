@@ -6,11 +6,13 @@ import { useNavigate } from 'react-router-dom';
 interface AuthContextType {
   user: User | null;
   session: Session | null;
+  accessToken: string | null;
   loading: boolean;
   signUp: (email: string, password: string, name: string) => Promise<{ error: Error | null }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: Error | null }>;
+  getAccessToken: () => Promise<string | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -18,6 +20,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -26,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       (event, session) => {
         setSession(session);
         setUser(session?.user ?? null);
+        setAccessToken(session?.access_token ?? null);
         setLoading(false);
       }
     );
@@ -34,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
+      setAccessToken(session?.access_token ?? null);
       setLoading(false);
     });
 
@@ -95,8 +100,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const getAccessToken = async () => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) return null;
+    const currentToken = data.session?.access_token ?? null;
+    setAccessToken(currentToken);
+    return currentToken;
+  };
+
   return (
-    <AuthContext.Provider value={{ user, session, loading, signUp, signIn, signOut, resetPassword }}>
+    <AuthContext.Provider value={{ user, session, accessToken, loading, signUp, signIn, signOut, resetPassword, getAccessToken }}>
       {children}
     </AuthContext.Provider>
   );

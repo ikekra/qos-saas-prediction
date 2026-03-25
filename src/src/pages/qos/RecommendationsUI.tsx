@@ -4,6 +4,7 @@ import { Header } from "@/components/Header";
 import { DashboardCard } from "@/components/DashboardCard";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { invokeWithLiveToken } from "@/lib/live-token";
 import { Loader2, Sparkles, Filter, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -64,7 +65,7 @@ export default function RecommendationsUI() {
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      const { data, error } = await supabase.functions.invoke("get-recommendations", {
+      const { data, error } = await invokeWithLiveToken("get-recommendations", {
         body: { type: "user" },
       });
       if (error) throw error;
@@ -204,3 +205,4 @@ export default function RecommendationsUI() {
     </div>
   );
 }
+

@@ -12,6 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { Header } from '@/components/Header';
 import { requireUser } from '@/lib/auth';
+import { invokeWithLiveToken } from '@/lib/live-token';
 
 export default function NewService() {
   const navigate = useNavigate();
@@ -32,7 +33,7 @@ export default function NewService() {
     try {
       const user = await requireUser();
 
-      const { error } = await supabase.functions.invoke('create-web-service', {
+      const { error } = await invokeWithLiveToken('create-web-service', {
         body: {
           name: formData.name,
           provider: formData.provider,
@@ -176,3 +177,4 @@ export default function NewService() {
     </div>
   );
 }
+
