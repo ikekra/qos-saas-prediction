@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Badge } from '@/components/ui/badge';
-import { supabase } from '@/integrations/supabase/client';
 import { UNREAD_ALERT_COUNT_KEY } from '@/hooks/useQosAlerts';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
 import {
   ActivitySquare,
   Bell,
@@ -41,10 +41,7 @@ export function Header() {
   const navigate = useNavigate();
   const isAdmin = user?.app_metadata?.role === 'admin';
   const [unreadCount, setUnreadCount] = useState(0);
-  const [tokenBalance, setTokenBalance] = useState<number | null>(null);
-  const [tokenSyncStatus, setTokenSyncStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
-  const tokenChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const tokenRefreshTimerRef = useRef<number | null>(null);
+  const { tokenUsage, liveStatus } = useTokenUsage();
 
   const handleSignOut = async () => {
     await signOut();
@@ -67,92 +64,6 @@ export function Header() {
       window.removeEventListener('focus', refreshUnread);
     };
   }, []);
-
-  useEffect(() => {
-    const fetchTokenBalance = async () => {
-      if (!user) {
-        setTokenBalance(null);
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from('user_profiles')
-        .select('token_balance')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (!error && data) {
-        setTokenBalance(data.token_balance ?? 0);
-      }
-    };
-
-    void fetchTokenBalance();
-  }, [user]);
-
-  useEffect(() => {
-    const scheduleRefresh = () => {
-      if (tokenRefreshTimerRef.current) window.clearTimeout(tokenRefreshTimerRef.current);
-      tokenRefreshTimerRef.current = window.setTimeout(() => {
-        if (!user) return;
-        void supabase
-          .from('user_profiles')
-          .select('token_balance')
-          .eq('id', user.id)
-          .maybeSingle()
-          .then(({ data, error }) => {
-            if (!error && data) setTokenBalance(data.token_balance ?? 0);
-          });
-      }, 200);
-    };
-
-    if (!user) {
-      if (tokenChannelRef.current) supabase.removeChannel(tokenChannelRef.current);
-      setTokenSyncStatus('disconnected');
-      return;
-    }
-
-    if (tokenChannelRef.current) {
-      supabase.removeChannel(tokenChannelRef.current);
-    }
-
-    const channel = supabase
-      .channel(`header-token-${user.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'user_profiles', filter: `id=eq.${user.id}` },
-        scheduleRefresh,
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'token_transactions', filter: `user_id=eq.${user.id}` },
-        scheduleRefresh,
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'payments', filter: `user_id=eq.${user.id}` },
-        scheduleRefresh,
-      )
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setTokenSyncStatus('connected');
-          return;
-        }
-        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          setTokenSyncStatus('reconnecting');
-          return;
-        }
-        if (status === 'CLOSED') {
-          setTokenSyncStatus('disconnected');
-        }
-      });
-
-    tokenChannelRef.current = channel;
-
-    return () => {
-      if (tokenRefreshTimerRef.current) window.clearTimeout(tokenRefreshTimerRef.current);
-      if (tokenChannelRef.current) supabase.removeChannel(tokenChannelRef.current);
-    };
-  }, [user]);
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -209,14 +120,14 @@ export function Header() {
                     className="hidden sm:inline-flex cursor-pointer border-primary/30 bg-primary/10 text-primary"
                   >
                     <Coins className="mr-1 h-3.5 w-3.5" />
-                    {new Intl.NumberFormat('en-IN').format(tokenBalance ?? 0)} tokens
+                    {new Intl.NumberFormat('en-IN').format(tokenUsage.balance)} tokens
                   </Badge>
                 </Link>
                 <Badge
-                  variant={tokenSyncStatus === 'connected' ? 'secondary' : 'outline'}
+                  variant={liveStatus === 'live' ? 'secondary' : 'outline'}
                   className="hidden md:inline-flex"
                 >
-                  Live: {tokenSyncStatus}
+                  Live: {liveStatus}
                 </Badge>
 
                 <DropdownMenu>

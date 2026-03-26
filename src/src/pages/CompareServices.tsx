@@ -46,7 +46,7 @@ type LiveMetric = {
 export default function CompareServices() {
   const { toast } = useToast();
   const navigate = useNavigate();
-  const { tokenUsage, refreshTokenUsage } = useTokenUsage();
+  const { tokenUsage, refreshTokenUsage, applyOptimisticBalance } = useTokenUsage();
   const [services, setServices] = useState<WebService[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [liveMetrics, setLiveMetrics] = useState<Record<string, LiveMetric>>({});
@@ -181,6 +181,9 @@ export default function CompareServices() {
               body: { serviceUrl: testUrl, testType },
             });
             if (error) throw error;
+            if (typeof data?.token?.balance === 'number') {
+              applyOptimisticBalance(data.token.balance);
+            }
             return data?.results || {};
           };
 

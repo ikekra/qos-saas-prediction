@@ -17,7 +17,7 @@ import { getOperationCost } from '@/lib/token-usage';
 export default function ServicesList() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { tokenUsage, refreshTokenUsage } = useTokenUsage();
+  const { tokenUsage, refreshTokenUsage, applyOptimisticBalance } = useTokenUsage();
   const [services, setServices] = useState<any[]>([]);
   const [filteredServices, setFilteredServices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -252,6 +252,9 @@ export default function ServicesList() {
           body: { serviceUrl: testUrl, testType },
         });
         if (error) throw error;
+        if (typeof data?.token?.balance === 'number') {
+          applyOptimisticBalance(data.token.balance);
+        }
         return data?.results || {};
       };
 

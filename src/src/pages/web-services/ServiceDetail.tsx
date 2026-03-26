@@ -15,6 +15,8 @@ type WebService = {
   logo_url: string | null;
   provider: string;
   description: string;
+  base_url: string | null;
+  docs_url: string | null;
   base_latency_estimate: number | null;
   availability_score: number | null;
   tags: string[] | null;
@@ -33,7 +35,7 @@ export default function WebServiceDetail() {
       try {
         const { data, error } = await supabase
           .from("web_services")
-          .select("id, name, category, logo_url, provider, description, base_latency_estimate, availability_score, tags")
+          .select("id, name, category, logo_url, provider, description, base_url, docs_url, base_latency_estimate, availability_score, tags")
           .eq("id", id)
           .single();
 
@@ -115,6 +117,15 @@ export default function WebServiceDetail() {
               <Button variant="outline" className="gap-2">
                 <Globe className="h-4 w-4" />
                 Visit Provider
+              </Button>
+              <Button
+                className="gap-2"
+                onClick={() =>
+                  navigate(`/qos/run-test?serviceUrl=${encodeURIComponent(service.base_url || service.docs_url || '')}`)
+                }
+                disabled={!service.base_url && !service.docs_url}
+              >
+                Run Test
               </Button>
             </CardContent>
           </Card>

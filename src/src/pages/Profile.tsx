@@ -18,12 +18,6 @@ import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-tok
 import { Progress } from '@/components/ui/progress';
 import { useTokenUsage } from '@/hooks/useTokenUsage';
 
-type UserSubscription = {
-  token_balance: number;
-  lifetime_tokens_used: number;
-  created_at: string | null;
-};
-
 type TokenTransaction = {
   id: string;
   type: 'credit' | 'debit';
@@ -40,6 +34,15 @@ type PaymentRecord = {
   tokens_purchased: number;
   status: 'pending' | 'success' | 'failed';
   pack_name: string | null;
+  created_at: string;
+};
+
+type TopUpRecord = {
+  id: string;
+  amount_paid: number;
+  tokens_added: number;
+  status: 'pending' | 'completed' | 'failed';
+  package_selected: string | null;
   created_at: string;
 };
 
@@ -90,17 +93,16 @@ export default function Profile() {
   const [favorites, setFavorites] = useState<any[]>([]);
   const [recentTests, setRecentTests] = useState<any[]>([]);
   const [ratings, setRatings] = useState<any[]>([]);
-  const [subscription, setSubscription] = useState<UserSubscription | null>(null);
   const [tokenTransactions, setTokenTransactions] = useState<TokenTransaction[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
-  const [subscriptionRefreshing, setSubscriptionRefreshing] = useState(false);
-  const [tokenRealtimeStatus, setTokenRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const [paymentInitiated, setPaymentInitiated] = useState(false);
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [topUpLoading, setTopUpLoading] = useState<Record<PackName, boolean>>({
     starter: false,
     growth: false,
     pro: false,
   });
-  const { tokenUsage, usagePercent, refreshTokenUsage, balanceUpdatedAt, balanceRecentlyUpdated } = useTokenUsage();
+  const { tokenUsage, usagePercent, refreshTokenUsage, applyOptimisticBalance, balanceUpdatedAt, balanceRecentlyUpdated, liveStatus } = useTokenUsage();
   const tokenChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const tokenRefreshTimerRef = useRef<number | null>(null);
 
@@ -108,6 +110,7 @@ export default function Profile() {
     fetchProfile();
     fetchUserActivity();
     fetchSubscriptionData();
+    void refreshTokenUsage();
   }, []);
 
   useEffect(() => {
@@ -148,19 +151,12 @@ export default function Profile() {
           { event: '*', schema: 'public', table: 'payments', filter: `user_id=eq.${user.id}` },
           scheduleRefresh,
         )
-        .subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            setTokenRealtimeStatus('connected');
-            return;
-          }
-          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            setTokenRealtimeStatus('reconnecting');
-            return;
-          }
-          if (status === 'CLOSED') {
-            setTokenRealtimeStatus('disconnected');
-          }
-        });
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'topup_records', filter: `user_id=eq.${user.id}` },
+          scheduleRefresh,
+        )
+        .subscribe();
 
       tokenChannelRef.current = channel;
     };
@@ -175,7 +171,11 @@ export default function Profile() {
   }, []);
 
   useEffect(() => {
-    const hasPendingPayment = paymentHistory.some((payment) => payment.status === 'pending');
+    const hasPendingPayment = paymentHistory.some((payment) => {
+      if (payment.status !== 'pending') return false;
+      const ageMs = Date.now() - new Date(payment.created_at).getTime();
+      return ageMs <= 15 * 60 * 1000;
+    });
     if (!hasPendingPayment) return;
 
     const poller = setInterval(() => {
@@ -186,10 +186,25 @@ export default function Profile() {
   }, [paymentHistory]);
 
   useEffect(() => {
+    if (!balanceUpdatedAt) return;
+    if (tokenRefreshTimerRef.current) window.clearTimeout(tokenRefreshTimerRef.current);
+    tokenRefreshTimerRef.current = window.setTimeout(() => {
+      void fetchSubscriptionData();
+    }, 200);
+  }, [balanceUpdatedAt]);
+
+  useEffect(() => {
     if (!banner) return;
     const timer = setTimeout(() => setBanner(null), 4000);
     return () => clearTimeout(timer);
   }, [banner]);
+
+  useEffect(() => {
+    return () => {
+      setIsProcessingPayment(false);
+      setPaymentInitiated(false);
+    };
+  }, []);
 
   const fetchProfile = async () => {
     try {
@@ -278,7 +293,6 @@ export default function Profile() {
   };
 
   const fetchSubscriptionData = async () => {
-    setSubscriptionRefreshing(true);
     try {
       const {
         data: { user },
@@ -287,12 +301,7 @@ export default function Profile() {
 
       const db = supabase as any;
 
-      const [subscriptionRes, transactionsRes, paymentsRes] = await Promise.all([
-        db
-          .from('user_profiles')
-          .select('token_balance, lifetime_tokens_used, created_at')
-          .eq('id', user.id)
-          .maybeSingle(),
+      const [transactionsRes, paymentsRes, topupsRes] = await Promise.all([
         db
           .from('token_transactions')
           .select('id, type, amount, balance_after, description, endpoint, created_at')
@@ -305,21 +314,32 @@ export default function Profile() {
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(8),
+        db
+          .from('topup_records')
+          .select('id, amount_paid, tokens_added, status, package_selected, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(8),
       ]);
-
-      if (!subscriptionRes.error && subscriptionRes.data) {
-        setSubscription(subscriptionRes.data as UserSubscription);
-      }
       if (!transactionsRes.error) {
         setTokenTransactions((transactionsRes.data || []) as TokenTransaction[]);
       }
-      if (!paymentsRes.error) {
-        setPaymentHistory((paymentsRes.data || []) as PaymentRecord[]);
-      }
+      const payments = !paymentsRes.error ? ((paymentsRes.data || []) as PaymentRecord[]) : [];
+      const topups = !topupsRes.error ? ((topupsRes.data || []) as TopUpRecord[]) : [];
+      const normalizedTopups: PaymentRecord[] = topups.map((row) => ({
+        id: `topup-${row.id}`,
+        amount_in_paise: Math.round(Number(row.amount_paid || 0) * 100),
+        tokens_purchased: Number(row.tokens_added || 0),
+        status: row.status === 'completed' ? 'success' : row.status,
+        pack_name: row.package_selected,
+        created_at: row.created_at,
+      }));
+      const mergedPayments = [...payments, ...normalizedTopups]
+        .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
+        .slice(0, 12);
+      setPaymentHistory(mergedPayments);
     } catch (error) {
       console.error('Error fetching subscription details:', error);
-    } finally {
-      setSubscriptionRefreshing(false);
     }
   };
 
@@ -341,20 +361,39 @@ export default function Profile() {
     });
   };
 
+  const withTimeout = async <T,>(promise: Promise<T>, timeoutMs = 10000): Promise<T> => {
+    let timer: number | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error('Request timed out. Please try again.')), timeoutMs);
+    });
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
+  };
+
   const handleTopUp = async (pack: PackName) => {
+    setPaymentInitiated(true);
+    setIsProcessingPayment(true);
     setTopUpLoading((prev) => ({ ...prev, [pack]: true }));
     try {
       const user = await requireUser();
 
-      const { data: orderData, error: orderError } = await invokeWithLiveToken('payments-create-order', {
-        body: { pack },
-      });
+      const { data: orderData, error: orderError } = await withTimeout(
+        invokeWithLiveToken('payments-create-order', {
+          body: { pack },
+        }),
+      );
       if (orderError) throw orderError;
       if ((orderData as { error?: string } | null)?.error) {
         throw new Error((orderData as { error?: string }).error);
       }
 
       if (orderData?.isMockAutoVerified) {
+        if (typeof orderData?.newBalance === 'number') {
+          applyOptimisticBalance(orderData.newBalance);
+        }
         toast({
           title: 'Mock top-up successful',
           description: `Tokens credited. New balance: ${orderData?.newBalance ?? 'updated'}`,
@@ -365,14 +404,19 @@ export default function Profile() {
       }
 
       if (orderData?.isMock) {
-        const { error: verifyError } = await invokeWithLiveToken('payments-verify', {
-          body: {
-            razorpay_order_id: orderData.orderId,
-            razorpay_payment_id: `mock_payment_${crypto.randomUUID()}`,
-            razorpay_signature: 'mock_signature',
-          },
-        });
+        const { error: verifyError } = await withTimeout(
+          invokeWithLiveToken('payments-verify', {
+            body: {
+              razorpay_order_id: orderData.orderId,
+              razorpay_payment_id: `mock_payment_${crypto.randomUUID()}`,
+              razorpay_signature: 'mock_signature',
+            },
+          }),
+        );
         if (verifyError) throw verifyError;
+        if (typeof (orderData as { newBalance?: number } | null)?.newBalance === 'number') {
+          applyOptimisticBalance((orderData as { newBalance: number }).newBalance);
+        }
 
         toast({
           title: 'Mock top-up successful',
@@ -403,12 +447,17 @@ export default function Profile() {
         prefill: { email: user.email ?? undefined },
         theme: { color: '#0ea5e9' },
         handler: async (response: RazorpaySuccessResponse) => {
-          const { data: verifyData, error: verifyError } = await invokeWithLiveToken('payments-verify', {
-            body: response,
-          });
+          const { data: verifyData, error: verifyError } = await withTimeout(
+            invokeWithLiveToken('payments-verify', {
+              body: response,
+            }),
+          );
           if (verifyError) throw verifyError;
           if ((verifyData as { error?: string } | null)?.error) {
             throw new Error((verifyData as { error?: string }).error);
+          }
+          if (typeof (verifyData as { newBalance?: number } | null)?.newBalance === 'number') {
+            applyOptimisticBalance((verifyData as { newBalance: number }).newBalance);
           }
 
           toast({
@@ -432,6 +481,8 @@ export default function Profile() {
         variant: 'destructive',
       });
     } finally {
+      setIsProcessingPayment(false);
+      setPaymentInitiated(false);
       setTopUpLoading((prev) => ({ ...prev, [pack]: false }));
     }
   };
@@ -490,7 +541,12 @@ export default function Profile() {
     );
   }
 
-  const hasPendingPayment = paymentHistory.some((payment) => payment.status === 'pending');
+  const hasPendingPayment = paymentHistory.some((payment) => {
+    if (payment.status !== 'pending') return false;
+    const ageMs = Date.now() - new Date(payment.created_at).getTime();
+    return ageMs <= 15 * 60 * 1000;
+  });
+  const showProcessingBanner = paymentInitiated && (isProcessingPayment || hasPendingPayment);
 
   return (
     <div className="min-h-screen bg-background">
@@ -613,7 +669,7 @@ export default function Profile() {
 
             <TabsContent value="subscription">
               <div className="space-y-6">
-                {hasPendingPayment && (
+                {showProcessingBanner && (
                   <motion.div
                     initial={{ opacity: 0, y: -8 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -636,12 +692,15 @@ export default function Profile() {
                     <CardContent>
                       <p className="text-3xl font-semibold">
                         <span className={balanceRecentlyUpdated ? "text-emerald-600 transition-colors" : ""}>
-                          {subscriptionRefreshing ? <span className="inline-block h-8 w-24 rounded-md shimmer" /> : formatNumber(tokenUsage.balance || 0)}
+                          {formatNumber(tokenUsage.balance || 0)}
                         </span>
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">Available tokens</p>
                       <p className="text-xs mt-1 text-emerald-700">
                         {balanceUpdatedAt ? `Updated ${new Date(balanceUpdatedAt).toLocaleTimeString()}` : "Waiting for sync"}
+                      </p>
+                      <p className="text-xs mt-1">
+                        {liveStatus === 'live' ? 'Live' : liveStatus === 'reconnecting' ? 'Reconnecting...' : 'Live updates paused'}
                       </p>
                       {tokenUsage.stale && <p className="text-xs text-amber-600">May be outdated</p>}
                     </CardContent>
@@ -656,7 +715,7 @@ export default function Profile() {
                     </CardHeader>
                     <CardContent>
                       <p className="text-3xl font-semibold">
-                        {subscriptionRefreshing ? <span className="inline-block h-8 w-24 rounded-md shimmer" /> : formatNumber(tokenUsage.lifetimeUsed || 0)}
+                        {formatNumber(tokenUsage.lifetimeUsed || 0)}
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">Total consumed tokens</p>
                     </CardContent>
@@ -683,14 +742,14 @@ export default function Profile() {
                     <p className="text-xs mt-1">
                       <span
                         className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ${
-                          tokenRealtimeStatus === 'connected'
+                          liveStatus === 'live'
                             ? 'bg-emerald-100 text-emerald-700'
-                            : tokenRealtimeStatus === 'reconnecting'
+                            : liveStatus === 'reconnecting'
                               ? 'bg-amber-100 text-amber-700'
                               : 'bg-muted text-muted-foreground'
                         }`}
                       >
-                        Live sync: {tokenRealtimeStatus}
+                        Live sync: {liveStatus}
                       </span>
                     </p>
                   </CardHeader>

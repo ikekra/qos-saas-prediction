@@ -70,7 +70,7 @@ serve(async (req) => {
 
   if (error && supabaseServiceRoleKey) {
     const admin = createClient(supabaseUrl, supabaseServiceRoleKey);
-    const { data: profile, error: profileError } = await admin
+    let { data: profile, error: profileError } = await admin
       .from("user_profiles")
       .select("token_balance, lifetime_tokens_used")
       .eq("id", user.id)
@@ -87,13 +87,44 @@ serve(async (req) => {
     }
 
     if (!profile) {
-      return jsonResponse(
+      const safeEmail = user.email ?? `${user.id}@local.user`;
+      const { error: createProfileError } = await admin.from("user_profiles").upsert(
         {
-          error: "Failed to deduct tokens",
-          details: `${error.message} | fallback profile not found`,
+          id: user.id,
+          email: safeEmail,
+          token_balance: 0,
+          lifetime_tokens_used: 0,
         },
-        500,
+        { onConflict: "id" },
       );
+
+      if (createProfileError) {
+        return jsonResponse(
+          {
+            error: "Failed to deduct tokens",
+            details: `${error.message} | fallback profile init failed: ${createProfileError.message}`,
+          },
+          500,
+        );
+      }
+
+      const { data: createdProfile, error: createdProfileError } = await admin
+        .from("user_profiles")
+        .select("token_balance, lifetime_tokens_used")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (createdProfileError || !createdProfile) {
+        return jsonResponse(
+          {
+            error: "Failed to deduct tokens",
+            details: `${error.message} | fallback profile lookup failed after init: ${createdProfileError?.message ?? "profile missing"}`,
+          },
+          500,
+        );
+      }
+
+      profile = createdProfile;
     }
 
     const currentBalance = Number(profile.token_balance ?? 0);

@@ -31,10 +31,16 @@ type TokenUsageContextValue = {
   tokenUsage: TokenUsageState;
   usagePercent: number;
   loadingTokenUsage: boolean;
+  syncingTokenUsage: boolean;
   tokenUsageError: string | null;
   refreshTokenUsage: () => Promise<void>;
+  applyOptimisticBalance: (nextBalance: number) => void;
+  rollbackBalance: (previousBalance: number) => void;
+  deductTokens: (amount: number) => void;
+  refundTokens: (amount: number) => void;
   balanceUpdatedAt: string | null;
   balanceRecentlyUpdated: boolean;
+  liveStatus: "live" | "reconnecting" | "paused";
 };
 
 const initialState: TokenUsageState = {
@@ -51,17 +57,35 @@ const initialState: TokenUsageState = {
 };
 
 const TokenUsageContext = createContext<TokenUsageContextValue | null>(null);
+const roundToTwo = (value: number) => Number(value.toFixed(2));
 
 export function TokenUsageProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<TokenUsageState>(initialState);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [balanceUpdatedAt, setBalanceUpdatedAt] = useState<string | null>(null);
   const [balanceRecentlyUpdated, setBalanceRecentlyUpdated] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<"live" | "reconnecting" | "paused">("reconnecting");
   const prevBalanceRef = useRef<number>(0);
   const recentTimerRef = useRef<number | null>(null);
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<number | null>(null);
+  const pausedReconnectRef = useRef<number | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const channelRef = useRef<BroadcastChannel | null>(null);
+
+  const markBalanceUpdated = useCallback((balance: number) => {
+    const nowIso = new Date().toISOString();
+    prevBalanceRef.current = balance;
+    setBalanceUpdatedAt(nowIso);
+    setBalanceRecentlyUpdated(true);
+    if (recentTimerRef.current) window.clearTimeout(recentTimerRef.current);
+    recentTimerRef.current = window.setTimeout(() => setBalanceRecentlyUpdated(false), 2500);
+  }, []);
 
   const refresh = useCallback(async () => {
+    setSyncing(true);
     try {
       const {
         data: { user },
@@ -81,26 +105,35 @@ export function TokenUsageProvider({ children }: { children: React.ReactNode }) 
 
       const db = supabase as any;
 
-      const [profileRes, testsRes] = await Promise.all([
-        db
-          .from("user_profiles")
-          .select("token_balance, lifetime_tokens_used")
-          .eq("id", user.id)
-          .maybeSingle(),
-        db
-          .from("tests")
-          .select("service_url, test_type, created_at")
-          .eq("user_id", user.id)
-          .gte("created_at", cycleStart.toISOString())
-          .order("created_at", { ascending: false })
-          .limit(600),
-      ]);
-
+      const profileRes = await db
+        .from("user_profiles")
+        .select("token_balance, lifetime_tokens_used")
+        .eq("id", user.id)
+        .limit(1);
       if (profileRes.error) throw profileRes.error;
-      if (testsRes.error) throw testsRes.error;
 
-      const tests = (testsRes.data || []) as Array<{ service_url: string | null; test_type: string; created_at: string }>;
-      const profile = profileRes.data || { token_balance: 0, lifetime_tokens_used: 0 };
+      const txRes = await db
+        .from("token_transactions")
+        .select("amount, description, endpoint, created_at, type")
+        .eq("user_id", user.id)
+        .gte("created_at", cycleStart.toISOString())
+        .order("created_at", { ascending: false })
+        .limit(600);
+
+      const txError = txRes.error ?? null;
+      const txRows = txError
+        ? []
+        : ((txRes.data || []) as Array<{
+            amount: number;
+            description: string | null;
+            endpoint: string | null;
+            created_at: string;
+            type: "credit" | "debit";
+          }>);
+      const profile = (profileRes.data?.[0] as { token_balance?: number; lifetime_tokens_used?: number } | undefined) || {
+        token_balance: 0,
+        lifetime_tokens_used: 0,
+      };
 
       const perService = new Map<string, { tokens: number; tests: number }>();
       const perOperation = new Map<string, { tokens: number; count: number }>();
@@ -108,23 +141,37 @@ export function TokenUsageProvider({ children }: { children: React.ReactNode }) 
       let cycleUsed = 0;
       let weeklyLatencyTests = 0;
 
-      for (const test of tests) {
-        const operation = (test.test_type || "latency").toLowerCase();
-        const cost = getOperationCost(operation);
-        cycleUsed += cost;
+      for (const tx of txRows) {
+        if (tx.type !== "debit") continue;
+        const tokens = Number(tx.amount ?? 0);
+        if (!Number.isFinite(tokens) || tokens <= 0) continue;
+        cycleUsed += tokens;
+
+        const desc = String(tx.description || "").toLowerCase();
+        const operationFromDesc =
+          desc.includes("latency")
+            ? "latency"
+            : desc.includes("load")
+              ? "load"
+              : desc.includes("uptime")
+                ? "uptime"
+                : desc.includes("throughput")
+                  ? "throughput"
+                  : "other";
+        const operation = operationFromDesc.toLowerCase();
 
         const existingOp = perOperation.get(operation) || { tokens: 0, count: 0 };
-        existingOp.tokens += cost;
+        existingOp.tokens += tokens;
         existingOp.count += 1;
         perOperation.set(operation, existingOp);
 
-        const serviceName = test.service_url || "Unknown Service";
+        const serviceName = tx.endpoint || "Unknown Service";
         const existingService = perService.get(serviceName) || { tokens: 0, tests: 0 };
-        existingService.tokens += cost;
+        existingService.tokens += tokens;
         existingService.tests += 1;
         perService.set(serviceName, existingService);
 
-        if (operation === "latency" && new Date(test.created_at) >= weekStart) {
+        if (operation === "latency" && new Date(tx.created_at) >= weekStart) {
           weeklyLatencyTests += 1;
         }
       }
@@ -142,34 +189,82 @@ export function TokenUsageProvider({ children }: { children: React.ReactNode }) 
 
       const nextBalance = Number(profile.token_balance ?? 0);
       const nowIso = new Date().toISOString();
-      if (nextBalance !== prevBalanceRef.current) {
-        prevBalanceRef.current = nextBalance;
-        setBalanceUpdatedAt(nowIso);
-        setBalanceRecentlyUpdated(true);
-        if (recentTimerRef.current) window.clearTimeout(recentTimerRef.current);
-        recentTimerRef.current = window.setTimeout(() => setBalanceRecentlyUpdated(false), 2500);
-      }
+      if (nextBalance !== prevBalanceRef.current) markBalanceUpdated(nextBalance);
 
       setState({
         balance: nextBalance,
         lifetimeUsed: Number(profile.lifetime_tokens_used ?? 0),
-        cycleUsed,
+        cycleUsed: roundToTwo(cycleUsed),
         cycleLimit: BILLING_CYCLE_TOKEN_LIMIT,
         weeklyLatencyTests,
         weeklyLatencyTokens,
         perServiceSpend,
         perOperationSpend,
-        stale: false,
+        stale: Boolean(txError),
         lastUpdated: nowIso,
       });
-      setError(null);
+      setError(txError?.message ?? null);
     } catch (err: any) {
       setState((prev) => ({ ...prev, stale: true }));
       setError(err?.message || "Failed to refresh token usage");
     } finally {
+      setSyncing(false);
       setLoading(false);
     }
-  }, []);
+  }, [markBalanceUpdated]);
+
+  const applyOptimisticBalance = useCallback((nextBalance: number) => {
+    markBalanceUpdated(nextBalance);
+    setState((prev) => ({
+      ...prev,
+      balance: nextBalance,
+      stale: false,
+      lastUpdated: new Date().toISOString(),
+    }));
+    if (!channelRef.current) return;
+    channelRef.current.postMessage({ type: "TOKEN_UPDATED", newBalance: nextBalance });
+  }, [markBalanceUpdated]);
+
+  const rollbackBalance = useCallback((previousBalance: number) => {
+    markBalanceUpdated(previousBalance);
+    setState((prev) => ({
+      ...prev,
+      balance: previousBalance,
+      lastUpdated: new Date().toISOString(),
+    }));
+  }, [markBalanceUpdated]);
+
+  const deductTokens = useCallback((amount: number) => {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    setState((prev) => {
+      const nextBalance = Math.max(0, prev.balance - amount);
+      markBalanceUpdated(nextBalance);
+      return {
+        ...prev,
+        balance: nextBalance,
+        cycleUsed: prev.cycleUsed + amount,
+        lifetimeUsed: prev.lifetimeUsed + amount,
+        stale: false,
+        lastUpdated: new Date().toISOString(),
+      };
+    });
+  }, [markBalanceUpdated]);
+
+  const refundTokens = useCallback((amount: number) => {
+    if (!Number.isFinite(amount) || amount <= 0) return;
+    setState((prev) => {
+      const nextBalance = prev.balance + amount;
+      markBalanceUpdated(nextBalance);
+      return {
+        ...prev,
+        balance: nextBalance,
+        cycleUsed: Math.max(0, prev.cycleUsed - amount),
+        lifetimeUsed: Math.max(0, prev.lifetimeUsed - amount),
+        stale: false,
+        lastUpdated: new Date().toISOString(),
+      };
+    });
+  }, [markBalanceUpdated]);
 
   useEffect(() => {
     void refresh();
@@ -192,8 +287,84 @@ export function TokenUsageProvider({ children }: { children: React.ReactNode }) 
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("focus", handleFocus);
       if (recentTimerRef.current) window.clearTimeout(recentTimerRef.current);
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+      if (pausedReconnectRef.current) window.clearTimeout(pausedReconnectRef.current);
+      eventSourceRef.current?.close();
+      channelRef.current?.close();
     };
   }, [refresh]);
+
+  useEffect(() => {
+    channelRef.current = new BroadcastChannel("token_updates");
+    channelRef.current.onmessage = (event) => {
+      const payload = event.data as { type?: string; newBalance?: number };
+      if (payload?.type === "TOKEN_UPDATED" && typeof payload.newBalance === "number") {
+        markBalanceUpdated(payload.newBalance);
+        setState((prev) => ({ ...prev, balance: payload.newBalance, stale: false, lastUpdated: new Date().toISOString() }));
+      }
+    };
+
+    const connect = async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (!token) {
+        setLiveStatus("paused");
+        pausedReconnectRef.current = window.setTimeout(() => void connect(), 10000);
+        return;
+      }
+
+      const sseUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/token-stream?access_token=${encodeURIComponent(token)}`;
+      setLiveStatus("reconnecting");
+
+      const es = new EventSource(sseUrl);
+      eventSourceRef.current = es;
+
+      es.onopen = () => {
+        retryCountRef.current = 0;
+        setLiveStatus("live");
+      };
+
+      es.onmessage = (evt) => {
+        try {
+          const payload = JSON.parse(evt.data) as { type?: string; newBalance?: number; lifetimeUsed?: number };
+          if (payload.type === "TOKEN_UPDATED" && typeof payload.newBalance === "number") {
+            applyOptimisticBalance(payload.newBalance);
+            if (typeof payload.lifetimeUsed === "number") {
+              setState((prev) => ({
+                ...prev,
+                lifetimeUsed: payload.lifetimeUsed as number,
+                lastUpdated: new Date().toISOString(),
+              }));
+            }
+            void refresh();
+          }
+          if (payload.type === "BILLING_UPDATED") {
+            void refresh();
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      es.onerror = () => {
+        es.close();
+        const nextRetry = retryCountRef.current + 1;
+        retryCountRef.current = nextRetry;
+        const retryDelay = Math.min(30000, 5000 * nextRetry);
+        setLiveStatus(nextRetry >= 3 ? "paused" : "reconnecting");
+        retryTimerRef.current = window.setTimeout(() => void connect(), retryDelay);
+      };
+    };
+
+    void connect();
+
+    return () => {
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+      if (pausedReconnectRef.current) window.clearTimeout(pausedReconnectRef.current);
+      eventSourceRef.current?.close();
+      channelRef.current?.close();
+    };
+  }, [applyOptimisticBalance, markBalanceUpdated, refresh]);
 
   const usagePercent = useMemo(() => {
     if (!state.cycleLimit) return 0;
@@ -205,12 +376,18 @@ export function TokenUsageProvider({ children }: { children: React.ReactNode }) 
       tokenUsage: state,
       usagePercent,
       loadingTokenUsage: loading,
+      syncingTokenUsage: syncing,
       tokenUsageError: error,
       refreshTokenUsage: refresh,
+      applyOptimisticBalance,
+      rollbackBalance,
+      deductTokens,
+      refundTokens,
       balanceUpdatedAt,
       balanceRecentlyUpdated,
+      liveStatus,
     }),
-    [state, usagePercent, loading, error, refresh, balanceUpdatedAt, balanceRecentlyUpdated],
+    [state, usagePercent, loading, syncing, error, refresh, applyOptimisticBalance, rollbackBalance, deductTokens, refundTokens, balanceUpdatedAt, balanceRecentlyUpdated, liveStatus],
   );
 
   return <TokenUsageContext.Provider value={value}>{children}</TokenUsageContext.Provider>;

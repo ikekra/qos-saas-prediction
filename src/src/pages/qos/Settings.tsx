@@ -43,6 +43,15 @@ type UsageRecord = {
   created_at: string;
 };
 
+type PaymentRecord = {
+  id: string;
+  amount_in_paise: number;
+  tokens_purchased: number;
+  status: "pending" | "success" | "failed";
+  pack_name: string | null;
+  created_at: string;
+};
+
 const PACKAGES = [
   { id: "starter", label: "5,000 tokens - Rs 199", pack: "starter", amount: 199, tokens: 5000 },
   { id: "growth", label: "15,000 tokens - Rs 499", pack: "growth", amount: 499, tokens: 15000 },
@@ -61,7 +70,7 @@ function csv(rows: Array<Record<string, string | number>>) {
 export default function QosSettings() {
   const { toast } = useToast();
   const location = useLocation();
-  const { tokenUsage, refreshTokenUsage, balanceRecentlyUpdated, balanceUpdatedAt } = useTokenUsage();
+  const { tokenUsage, refreshTokenUsage, applyOptimisticBalance, rollbackBalance, balanceRecentlyUpdated, balanceUpdatedAt, liveStatus } = useTokenUsage();
 
   const [tab, setTab] = useState<"account" | "monitoring" | "billing">("account");
   const [loading, setLoading] = useState(true);
@@ -90,6 +99,7 @@ export default function QosSettings() {
 
   const [records, setRecords] = useState<TopUpRecord[]>([]);
   const [usage, setUsage] = useState<UsageRecord[]>([]);
+  const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [filter, setFilter] = useState<"all" | "topups" | "usage">("all");
   const [detail, setDetail] = useState<TopUpRecord | null>(null);
 
@@ -105,7 +115,7 @@ export default function QosSettings() {
 
   const loadBilling = async (uid: string) => {
     const db = supabase as any;
-    const [topups, debits] = await Promise.all([
+    const [topups, debits, paymentsRes] = await Promise.all([
       db.from("topup_records").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(50),
       db
         .from("token_transactions")
@@ -114,9 +124,16 @@ export default function QosSettings() {
         .eq("type", "debit")
         .order("created_at", { ascending: false })
         .limit(50),
+      db
+        .from("payments")
+        .select("id, amount_in_paise, tokens_purchased, status, pack_name, created_at")
+        .eq("user_id", uid)
+        .order("created_at", { ascending: false })
+        .limit(50),
     ]);
     if (!topups.error) setRecords((topups.data || []) as TopUpRecord[]);
     if (!debits.error) setUsage((debits.data || []) as UsageRecord[]);
+    if (!paymentsRes.error) setPayments((paymentsRes.data || []) as PaymentRecord[]);
   };
 
   useEffect(() => {
@@ -138,6 +155,62 @@ export default function QosSettings() {
     };
     void init();
   }, []);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    let refreshTimer: number | null = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        void loadBilling(userId);
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel(`billing-live-${userId}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "user_profiles", filter: `id=eq.${userId}` },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "topup_records", filter: `user_id=eq.${userId}` },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "token_transactions", filter: `user_id=eq.${userId}` },
+        scheduleRefresh,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "payments", filter: `user_id=eq.${userId}` },
+        scheduleRefresh,
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      void supabase.removeChannel(channel);
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId || !balanceUpdatedAt) return;
+    void loadBilling(userId);
+  }, [balanceUpdatedAt, userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    const hasPending = records.some((row) => row.status === "pending") || payments.some((row) => row.status === "pending");
+    if (!hasPending) return;
+    const poller = window.setInterval(() => {
+      void loadBilling(userId);
+    }, 5000);
+    return () => window.clearInterval(poller);
+  }, [records, payments, userId]);
 
   const selected = useMemo(() => PACKAGES.find((p) => p.id === selectedPackage) ?? PACKAGES[1], [selectedPackage]);
   const tokensToAdd = selectedPackage === "custom" ? Number(customTokens || 0) : selected.tokens;
@@ -166,8 +239,21 @@ export default function QosSettings() {
       category: "usage" as const,
       raw: null,
     }));
-    return [...t, ...u].sort((a, b) => +new Date(b.date) - +new Date(a.date));
-  }, [records, usage]);
+    const p = payments.map((r) => ({
+      id: `payment-${r.id}`,
+      date: r.created_at,
+      type: "Payment",
+      tokens: `+${new Intl.NumberFormat("en-IN").format(r.tokens_purchased || 0)}`,
+      amount: new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(
+        (r.amount_in_paise || 0) / 100,
+      ),
+      status: r.status === "success" ? "completed" : r.status,
+      details: r.pack_name || "payment",
+      category: "topups" as const,
+      raw: null,
+    }));
+    return [...t, ...u, ...p].sort((a, b) => +new Date(b.date) - +new Date(a.date));
+  }, [records, usage, payments]);
 
   const rows = merged.filter((r) => filter === "all" || r.category === filter);
 
@@ -178,38 +264,26 @@ export default function QosSettings() {
     }
 
     setTopupLoading(true);
-    const db = supabase as any;
-    let id: string | null = null;
+    const previousBalance = tokenUsage.balance;
+    applyOptimisticBalance(previousBalance + tokensToAdd);
     try {
-      const created = await db
-        .from("topup_records")
-        .insert({
-          user_id: userId,
-          full_name: fullName,
-          email,
-          account_user_id: userId,
-          tokens_added: tokensToAdd,
-          amount_paid: amount,
-          currency: "INR",
-          package_selected: selected.label,
-          notes: notes || null,
-          billing_address: billingAddress || null,
-          gst_id: gstId || null,
-          status: "pending",
-          payment_method: PAYMENT_ENABLED ? "gateway" : "manual",
-        })
-        .select("id")
-        .single();
+      const payload = {
+        tokensAdded: tokensToAdd,
+        amountPaid: amount,
+        packageSelected: selected.label,
+        fullName,
+        email,
+        notes,
+        billingAddress,
+        gstId,
+      };
 
-      if (created.error) throw created.error;
-      id = created.data?.id ?? null;
-
-      const payload = selected.pack === "custom" ? { pack: "custom", customAmount: amount } : { pack: selected.pack };
-      const { data, error } = await invokeWithLiveToken("payments-create-order", { body: payload });
+      const { data, error } = await invokeWithLiveToken("token-topup", { body: payload });
       if (error) throw error;
       if ((data as { error?: string } | null)?.error) throw new Error((data as { error?: string }).error);
-
-      if (id) await db.from("topup_records").update({ status: "completed" }).eq("id", id);
+      if (typeof (data as { newBalance?: number } | null)?.newBalance === "number") {
+        applyOptimisticBalance((data as { newBalance: number }).newBalance);
+      }
       await refreshTokenUsage();
       await loadBilling(userId);
       setTopupOpen(false);
@@ -218,7 +292,7 @@ export default function QosSettings() {
         description: `${new Intl.NumberFormat("en-IN").format(tokensToAdd)} tokens added to your account`,
       });
     } catch (err: unknown) {
-      if (id) await db.from("topup_records").update({ status: "failed" }).eq("id", id);
+      rollbackBalance(previousBalance);
       await loadBilling(userId);
       const message = await extractFunctionErrorMessage(err, "Top-up failed");
       toast({ title: "Top-up failed", description: message, variant: "destructive" });
@@ -313,6 +387,9 @@ export default function QosSettings() {
                   <p className="font-medium">Current Balance</p>
                   <p className="text-2xl font-semibold">{new Intl.NumberFormat("en-IN").format(tokenUsage.balance)}</p>
                   <p className="text-xs text-muted-foreground">{balanceUpdatedAt ? `Updated ${new Date(balanceUpdatedAt).toLocaleTimeString()}` : "Waiting for sync"}</p>
+                  <p className="text-xs mt-1">
+                    {liveStatus === "live" ? "Live" : liveStatus === "reconnecting" ? "Reconnecting..." : "Live updates paused (polling fallback)"}
+                  </p>
                   {tokenUsage.stale && <p className="text-xs text-amber-600">May be outdated</p>}
                 </div>
 
@@ -423,4 +500,3 @@ export default function QosSettings() {
     </div>
   );
 }
-

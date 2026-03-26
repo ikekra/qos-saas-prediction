@@ -269,7 +269,7 @@ export default function ServiceDetail() {
                 <Heart className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />
                 {isFavorite ? 'Favorited' : 'Add to Favorites'}
               </Button>
-              <Link to="/qos/run-test">
+              <Link to={`/qos/run-test?serviceUrl=${encodeURIComponent(service.base_url || service.docs_url || '')}`}>
                 <Button className="gap-2">
                   <TestTube className="h-4 w-4" />
                   Run Test

@@ -45,6 +45,22 @@ export async function extractFunctionErrorMessage(error: unknown, fallback: stri
 
   let message = maybeError?.message || fallback;
 
+  if (typeof message !== "string") {
+    try {
+      message = JSON.stringify(message);
+    } catch {
+      message = fallback;
+    }
+  }
+
+  if (message === "[object Object]") {
+    try {
+      message = JSON.stringify(error);
+    } catch {
+      message = fallback;
+    }
+  }
+
   if (maybeError?.context && typeof maybeError.context.json === "function") {
     try {
       const payload = (await maybeError.context.json()) as { error?: string; details?: string };

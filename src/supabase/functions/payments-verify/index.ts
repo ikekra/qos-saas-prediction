@@ -94,6 +94,32 @@ serve(async (req) => {
       return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null });
     }
 
+    const { data: existingProfile, error: existingProfileError } = await adminClient
+      .from("user_profiles")
+      .select("id")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    if (existingProfileError) {
+      return jsonResponse({ error: "Failed to load user profile", details: existingProfileError.message }, 500);
+    }
+
+    if (!existingProfile) {
+      const safeEmail = user.email ?? `${user.id}@local.user`;
+      const { error: createProfileError } = await adminClient.from("user_profiles").upsert(
+        {
+          id: user.id,
+          email: safeEmail,
+          token_balance: 0,
+          lifetime_tokens_used: 0,
+        },
+        { onConflict: "id" },
+      );
+      if (createProfileError) {
+        return jsonResponse({ error: "Failed to initialize user profile", details: createProfileError.message }, 500);
+      }
+    }
+
     let parsedCredit: CreditTokensResponse | null = null;
     let creditErrorMessage: string | null = null;
 

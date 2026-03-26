@@ -20,6 +20,8 @@ type WebService = {
   provider: string;
   description: string;
   availability_score: number | null;
+  base_url: string | null;
+  docs_url: string | null;
 };
 
 export default function WebServicesDirectory() {
@@ -36,7 +38,7 @@ export default function WebServicesDirectory() {
       try {
         const activeQuery = await supabase
           .from("web_services")
-          .select("id, name, category, logo_url, provider, description, availability_score")
+          .select("id, name, category, logo_url, provider, description, availability_score, base_url, docs_url")
           .eq("is_active", true)
           .order("availability_score", { ascending: false });
 
@@ -49,7 +51,7 @@ export default function WebServicesDirectory() {
 
         const allQuery = await supabase
           .from("web_services")
-          .select("id, name, category, logo_url, provider, description, availability_score")
+          .select("id, name, category, logo_url, provider, description, availability_score, base_url, docs_url")
           .order("availability_score", { ascending: false });
 
         if (allQuery.error) throw allQuery.error;
@@ -209,6 +211,18 @@ export default function WebServicesDirectory() {
                   <Button variant="outline" className="gap-2">
                     <Globe className="h-4 w-4" />
                     Visit Provider
+                  </Button>
+                  <Button
+                    onClick={() =>
+                      navigate(
+                        `/qos/run-test?serviceUrl=${encodeURIComponent(
+                          selectedService.base_url || selectedService.docs_url || '',
+                        )}`,
+                      )
+                    }
+                    disabled={!selectedService.base_url && !selectedService.docs_url}
+                  >
+                    Run Test
                   </Button>
                 </div>
               </div>

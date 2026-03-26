@@ -21,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { extractFunctionErrorMessage, invokeWithLiveToken } from '@/lib/live-token';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
 
 type PackName = 'starter' | 'growth' | 'pro';
 
@@ -185,6 +186,7 @@ const fadeUp = {
 export default function Landing() {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { applyOptimisticBalance, refreshTokenUsage } = useTokenUsage();
   const [email, setEmail] = useState('');
   const [checkoutLoading, setCheckoutLoading] = useState<Record<PackName, boolean>>({
     starter: false,
@@ -232,6 +234,10 @@ export default function Landing() {
       }
 
       if (orderData?.isMockAutoVerified) {
+        if (typeof orderData?.newBalance === 'number') {
+          applyOptimisticBalance(orderData.newBalance);
+        }
+        await refreshTokenUsage();
         toast({
           title: 'Mock top-up successful',
           description: `Tokens credited. New balance: ${orderData?.newBalance ?? 'updated'}`,
@@ -249,6 +255,10 @@ export default function Landing() {
         });
 
         if (verifyError) throw verifyError;
+        if (typeof (verifyData as { newBalance?: number } | null)?.newBalance === 'number') {
+          applyOptimisticBalance((verifyData as { newBalance: number }).newBalance);
+        }
+        await refreshTokenUsage();
 
         toast({
           title: 'Mock top-up successful',
@@ -285,6 +295,10 @@ export default function Landing() {
           if ((verifyData as { error?: string } | null)?.error) {
             throw new Error((verifyData as { error?: string }).error);
           }
+          if (typeof (verifyData as { newBalance?: number } | null)?.newBalance === 'number') {
+            applyOptimisticBalance((verifyData as { newBalance: number }).newBalance);
+          }
+          await refreshTokenUsage();
 
           toast({
             title: 'Payment successful',
