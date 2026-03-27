@@ -78,7 +78,7 @@ serve(async (req) => {
               .limit(1),
             admin
               .from("token_transactions")
-              .select("id, created_at")
+              .select("id, type, amount, balance_after, description, created_at")
               .eq("user_id", user.id)
               .order("created_at", { ascending: false })
               .limit(1),
@@ -94,7 +94,15 @@ serve(async (req) => {
           const currentBalance = Number(profile.token_balance ?? 0);
           const currentLifetime = Number(profile.lifetime_tokens_used ?? 0);
           const currentTopupId = (topupRes.data?.[0] as { id?: string } | undefined)?.id ?? null;
-          const currentTxId = (txRes.data?.[0] as { id?: string } | undefined)?.id ?? null;
+          const txRow =
+            (txRes.data?.[0] as {
+              id?: string;
+              type?: "credit" | "debit";
+              amount?: number;
+              balance_after?: number;
+              description?: string;
+            } | undefined) ?? {};
+          const currentTxId = txRow.id ?? null;
           const paymentRow = (paymentRes.data?.[0] as { id?: string; status?: string } | undefined) ?? {};
           const currentPaymentState = paymentRow.id ? `${paymentRow.id}:${paymentRow.status ?? "unknown"}` : null;
 
@@ -119,6 +127,25 @@ serve(async (req) => {
 
           if (currentTxId && currentTxId !== lastTxId) {
             lastTxId = currentTxId;
+            const txType = txRow.type ?? "debit";
+            const txDescription = String(txRow.description ?? "").toLowerCase();
+            const txEventType =
+              txType === "debit"
+                ? "TOKEN_DEDUCTED"
+                : txDescription.includes("refund")
+                  ? "TOKEN_REFUNDED"
+                  : "TOKEN_TOPUP";
+            const txBalance =
+              typeof txRow.balance_after === "number" ? Number(txRow.balance_after) : currentBalance;
+            send({
+              type: txEventType,
+              newBalance: txBalance,
+              balance: txBalance,
+              amount: Number(txRow.amount ?? 0),
+              lifetimeUsed: currentLifetime,
+              transactionId: currentTxId,
+              timestamp: new Date().toISOString(),
+            });
             send({
               type: "BILLING_UPDATED",
               transactionId: currentTxId,

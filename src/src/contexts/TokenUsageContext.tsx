@@ -326,9 +326,28 @@ export function TokenUsageProvider({ children }: { children: React.ReactNode }) 
 
       es.onmessage = (evt) => {
         try {
-          const payload = JSON.parse(evt.data) as { type?: string; newBalance?: number; lifetimeUsed?: number };
-          if (payload.type === "TOKEN_UPDATED" && typeof payload.newBalance === "number") {
-            applyOptimisticBalance(payload.newBalance);
+          const payload = JSON.parse(evt.data) as {
+            type?: string;
+            newBalance?: number;
+            balance?: number;
+            lifetimeUsed?: number;
+          };
+          const nextBalance =
+            typeof payload.newBalance === "number"
+              ? payload.newBalance
+              : typeof payload.balance === "number"
+                ? payload.balance
+                : null;
+
+          if (
+            (payload.type === "TOKEN_UPDATED" ||
+              payload.type === "TOKEN_DEDUCTED" ||
+              payload.type === "TOKEN_REFUNDED" ||
+              payload.type === "TOKEN_TOPUP" ||
+              payload.type === "TOKEN_SYNC") &&
+            typeof nextBalance === "number"
+          ) {
+            applyOptimisticBalance(nextBalance);
             if (typeof payload.lifetimeUsed === "number") {
               setState((prev) => ({
                 ...prev,

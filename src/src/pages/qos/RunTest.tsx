@@ -320,7 +320,7 @@ export default function RunTest() {
                     let success = 0;
                     let failed = 0;
                     for (const service of serviceOptions) {
-                      const { error } = await invokeWithLiveToken<RunResult>('run-qos-test', {
+                      const { data, error } = await invokeWithLiveToken<RunResult>('run-qos-test', {
                         body: {
                           serviceUrl: service.url,
                           testType,
@@ -333,6 +333,9 @@ export default function RunTest() {
                         failed += 1;
                       } else {
                         success += 1;
+                        if (typeof data?.token?.balance === 'number') {
+                          applyOptimisticBalance(data.token.balance);
+                        }
                       }
                     }
                     await refreshTokenUsage();
