@@ -1,8 +1,8 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
@@ -70,11 +70,12 @@ serve(async (req) => {
 
   if (error && supabaseServiceRoleKey) {
     const admin = createClient(supabaseUrl, supabaseServiceRoleKey);
-    let { data: profile, error: profileError } = await admin
+    const { data: initialProfile, error: profileError } = await admin
       .from("user_profiles")
       .select("token_balance, lifetime_tokens_used")
       .eq("id", user.id)
       .maybeSingle();
+    let profile = initialProfile;
 
     if (profileError) {
       return jsonResponse(
@@ -210,3 +211,4 @@ serve(async (req) => {
     mode: "rpc",
   });
 });
+
