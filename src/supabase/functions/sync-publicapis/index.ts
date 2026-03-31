@@ -1,8 +1,8 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
@@ -14,7 +14,7 @@ const DETAIL_CONCURRENCY = 5;
 
 const cleanText = (value: unknown): string | null => {
   if (!value || typeof value !== "string") return null;
-  const text = value.replace(/[^\x00-\x7F]+/g, " ").replace(/\s+/g, " ").trim();
+  const text = value.replace(/[^\x20-\x7E]+/g, " ").replace(/\s+/g, " ").trim();
   return text.length ? text : null;
 };
 
@@ -322,3 +322,4 @@ serve(async (req) => {
     );
   }
 });
+
