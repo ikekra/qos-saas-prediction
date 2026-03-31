@@ -1,8 +1,8 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
@@ -65,11 +65,12 @@ serve(async (req) => {
 
     const admin = createClient(supabaseUrl, serviceRole);
 
-    let { data: profile, error: profileErr } = await admin
+    const { data: initialProfile, error: profileErr } = await admin
       .from("user_profiles")
       .select("token_balance")
       .eq("id", user.id)
       .maybeSingle();
+    let profile = initialProfile;
 
     if (profileErr) return jsonResponse({ error: "Could not load profile", details: profileErr.message }, 500);
     if (!profile) {
@@ -161,3 +162,4 @@ serve(async (req) => {
     return jsonResponse({ error: message }, 500);
   }
 });
+
