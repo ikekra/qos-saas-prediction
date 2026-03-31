@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings=0",
+    "check": "npm run lint && npm run build",
     "preview": "vite preview",
     "sync:publicapis": "node scripts/sync_publicapis.mjs"
   },
