@@ -214,6 +214,12 @@ export function Header() {
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem asChild>
+                          <Link to="/admin" className="flex items-center gap-2">
+                            <Sparkles className="h-4 w-4" />
+                            Admin Hub
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
                           <Link to="/admin/web-services" className="flex items-center gap-2">
                             <Shield className="h-4 w-4" />
                             Admin Services
