@@ -1,16 +1,6 @@
-﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 
 type TopupBody = {
   tokensAdded?: number;
@@ -24,15 +14,15 @@ type TopupBody = {
 };
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
+  if (req.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders(req) });
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405, req);
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
   if (!supabaseUrl || !supabaseAnonKey || !serviceRole) {
-    return jsonResponse({ error: "Supabase environment is not configured." }, 500);
+    return jsonResponse({ error: "Supabase environment is not configured." }, 500, req);
   }
 
   try {
@@ -45,22 +35,22 @@ serve(async (req) => {
       error: authError,
     } = await authClient.auth.getUser();
 
-    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401);
+    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401, req);
 
     const body = (await req.json().catch(() => ({}))) as TopupBody;
     const tokensAdded = Number(body.tokensAdded ?? 0);
     const amountPaid = Number(body.amountPaid ?? 0);
 
     if (!Number.isFinite(tokensAdded) || tokensAdded <= 0) {
-      return jsonResponse({ error: "tokensAdded must be a positive number." }, 400);
+      return jsonResponse({ error: "tokensAdded must be a positive number." }, 400, req);
     }
     if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
-      return jsonResponse({ error: "amountPaid must be a positive number." }, 400);
+      return jsonResponse({ error: "amountPaid must be a positive number." }, 400, req);
     }
 
     const fullName = String(body.fullName || "").trim();
     const email = String(body.email || "").trim();
-    if (!fullName || !email) return jsonResponse({ error: "fullName and email are required." }, 400);
+    if (!fullName || !email) return jsonResponse({ error: "fullName and email are required." }, 400, req);
     const safeEmail = email || user.email || `${user.id}@local.user`;
 
     const admin = createClient(supabaseUrl, serviceRole);
@@ -72,7 +62,7 @@ serve(async (req) => {
       .maybeSingle();
     let profile = initialProfile;
 
-    if (profileErr) return jsonResponse({ error: "Could not load profile", details: profileErr.message }, 500);
+    if (profileErr) return jsonResponse({ error: "Could not load profile", details: profileErr.message }, 500, req);
     if (!profile) {
       const { error: createProfileError } = await admin.from("user_profiles").upsert(
         {
@@ -87,6 +77,7 @@ serve(async (req) => {
         return jsonResponse(
           { error: "Could not initialize user profile", details: createProfileError.message },
           500,
+          req,
         );
       }
 
@@ -99,6 +90,7 @@ serve(async (req) => {
         return jsonResponse(
           { error: "Profile not found after initialization", details: createdProfileError?.message },
           500,
+          req,
         );
       }
       profile = createdProfile;
@@ -127,14 +119,14 @@ serve(async (req) => {
       .select("id")
       .single();
 
-    if (topupErr) return jsonResponse({ error: "Could not save topup record", details: topupErr.message }, 500);
+    if (topupErr) return jsonResponse({ error: "Could not save topup record", details: topupErr.message }, 500, req);
 
     const { error: updateErr } = await admin
       .from("user_profiles")
       .update({ token_balance: newBalance })
       .eq("id", user.id);
 
-    if (updateErr) return jsonResponse({ error: "Could not update balance", details: updateErr.message }, 500);
+    if (updateErr) return jsonResponse({ error: "Could not update balance", details: updateErr.message }, 500, req);
 
     const { data: txRow, error: txErr } = await admin
       .from("token_transactions")
@@ -149,17 +141,20 @@ serve(async (req) => {
       .select("id")
       .single();
 
-    if (txErr) return jsonResponse({ error: "Could not create transaction", details: txErr.message }, 500);
+    if (txErr) return jsonResponse({ error: "Could not create transaction", details: txErr.message }, 500, req);
 
-    return jsonResponse({
-      success: true,
-      newBalance,
-      transactionId: txRow?.id ?? null,
-      topupId: topupRow?.id ?? null,
-    });
+    return jsonResponse(
+      {
+        success: true,
+        newBalance,
+        transactionId: txRow?.id ?? null,
+        topupId: topupRow?.id ?? null,
+      },
+      200,
+      req,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
-    return jsonResponse({ error: message }, 500);
+    return jsonResponse({ error: message }, 500, req);
   }
 });
-
