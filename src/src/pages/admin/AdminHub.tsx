@@ -1,14 +1,20 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
 import {
   AlertTriangle,
   ArrowUpRight,
   Coins,
   Crown,
   KeyRound,
+  Loader2,
   ReceiptText,
   Settings2,
   Shield,
@@ -35,21 +41,105 @@ const userScope = [
   "No access to other users, audit logs, or global config",
 ];
 
-const userRows = [
-  { name: "Arjun Sharma", email: "arjun@mit.edu", plan: "Student", tokens: "4,210", status: "Active", actionA: "Edit", actionB: "Suspend" },
-  { name: "Priya Mehta", email: "priya@gmail.com", plan: "Free", tokens: "320", status: "Active", actionA: "Edit", actionB: "Suspend" },
-  { name: "Rahul Kumar", email: "rahul@dev.io", plan: "Pro", tokens: "18,400", status: "Pending", actionA: "Verify", actionB: "Reject" },
-  { name: "Sneha Tiwari", email: "sneha@pune.ac.in", plan: "Student", tokens: "49", status: "Low tokens", actionA: "+ Tokens", actionB: "Edit" },
-];
+type LiveUserRow = {
+  id: string;
+  name: string;
+  email: string;
+  plan: string;
+  tokens: number;
+  status: "Active" | "Pending" | "Suspended" | "Low tokens";
+  email_verified: boolean;
+  is_owner: boolean;
+};
+
+type UserSummary = {
+  total_users: number;
+  active_users: number;
+  pending_users: number;
+  suspended_users: number;
+};
 
 function statusClass(status: string) {
   if (status === "Active") return "bg-emerald-500/15 text-emerald-200 border-emerald-400/30";
   if (status === "Pending") return "bg-amber-500/15 text-amber-200 border-amber-400/30";
-  return "bg-rose-500/15 text-rose-200 border-rose-400/30";
+  if (status === "Suspended") return "bg-rose-500/15 text-rose-200 border-rose-400/30";
+  return "bg-orange-500/15 text-orange-200 border-orange-400/30";
 }
 
 export default function AdminHub() {
   const { isAdmin } = useAuth();
+  const { toast } = useToast();
+  const [query, setQuery] = useState("");
+  const [planFilter, setPlanFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
+  const [actionLoadingId, setActionLoadingId] = useState("");
+  const [users, setUsers] = useState<LiveUserRow[]>([]);
+  const [summary, setSummary] = useState<UserSummary>({
+    total_users: 0,
+    active_users: 0,
+    pending_users: 0,
+    suspended_users: 0,
+  });
+
+  const filteredUsers = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return users.filter((row) => {
+      if (planFilter !== "all" && row.plan.toLowerCase() !== planFilter) return false;
+      if (!q) return true;
+      return `${row.name} ${row.email} ${row.id} ${row.plan}`.toLowerCase().includes(q);
+    });
+  }, [users, query, planFilter]);
+
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", "200");
+      const { data, error } = await invokeWithLiveToken<{
+        success: boolean;
+        summary: UserSummary;
+        users: LiveUserRow[];
+      }>(`admin-user-management?${params.toString()}`);
+
+      if (error) throw error;
+      if (!data?.success) throw new Error("Failed to load users");
+
+      setSummary(data.summary || { total_users: 0, active_users: 0, pending_users: 0, suspended_users: 0 });
+      setUsers(data.users || []);
+    } catch (err: unknown) {
+      const message = await extractFunctionErrorMessage(err, "Failed to load admin users");
+      toast({ title: "Load failed", description: message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    void fetchUsers();
+  }, [isAdmin]);
+
+  const runUserAction = async (targetUserId: string, action: "verify" | "suspend" | "reactivate" | "reject") => {
+    setActionLoadingId(`${targetUserId}:${action}`);
+    try {
+      const { data, error } = await invokeWithLiveToken<{ success: boolean }>("admin-user-management", {
+        body: {
+          target_user_id: targetUserId,
+          action,
+          reason: `Admin console action: ${action}`,
+        },
+      });
+      if (error) throw error;
+      if (!data?.success) throw new Error("Action failed");
+      toast({ title: `User ${action} successful` });
+      await fetchUsers();
+    } catch (err: unknown) {
+      const message = await extractFunctionErrorMessage(err, `Failed to ${action} user`);
+      toast({ title: "Action failed", description: message, variant: "destructive" });
+    } finally {
+      setActionLoadingId("");
+    }
+  };
 
   if (!isAdmin) {
     return (
@@ -151,22 +241,38 @@ export default function AdminHub() {
               </div>
               <p className="mb-3 mt-5 text-xs tracking-[0.18em] text-slate-400">TOOLS</p>
               <div className="space-y-1 text-sm">
-                <div className="rounded-lg px-3 py-2 text-slate-300">Token override</div>
+                <Link to="/admin/tokens" className="block rounded-lg px-3 py-2 text-slate-300 hover:bg-white/10">Token override</Link>
                 <div className="rounded-lg px-3 py-2 text-slate-300">API keys</div>
               </div>
             </aside>
 
             <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
               <div className="mb-3 flex flex-wrap gap-3">
-                <div className="flex-1 rounded-xl border border-white/15 bg-black/10 px-4 py-2 text-sm text-slate-300">
-                  Search users by name, email, plan...
-                </div>
-                <div className="rounded-xl border border-white/15 bg-black/10 px-4 py-2 text-sm text-slate-300">All plans</div>
-                <Button className="bg-violet-500 hover:bg-violet-400">+ Add user</Button>
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search users by name, email, plan..."
+                  className="max-w-[420px] border-white/20 bg-black/15 text-slate-100 placeholder:text-slate-400"
+                />
+                <select
+                  value={planFilter}
+                  onChange={(e) => setPlanFilter(e.target.value)}
+                  className="rounded-xl border border-white/15 bg-black/10 px-4 py-2 text-sm text-slate-300"
+                >
+                  <option value="all">All plans</option>
+                  <option value="free">Free</option>
+                  <option value="student">Student</option>
+                  <option value="basic">Basic</option>
+                  <option value="pro">Pro</option>
+                  <option value="enterprise">Enterprise</option>
+                </select>
+                <Button onClick={() => void fetchUsers()} className="bg-violet-500 hover:bg-violet-400">
+                  Refresh
+                </Button>
               </div>
 
               <div className="overflow-x-auto rounded-xl border border-white/10">
-                <table className="w-full min-w-[760px] text-left text-sm">
+                <table className="w-full min-w-[860px] text-left text-sm">
                   <thead className="bg-black/20 text-slate-300">
                     <tr>
                       <th className="px-3 py-2 font-medium">Name</th>
@@ -178,27 +284,80 @@ export default function AdminHub() {
                     </tr>
                   </thead>
                   <tbody>
-                    {userRows.map((row) => (
-                      <tr key={row.email} className="border-t border-white/10">
-                        <td className="px-3 py-3">{row.name}</td>
-                        <td className="px-3 py-3 text-slate-400">{row.email}</td>
-                        <td className="px-3 py-3">
-                          <span className="rounded-full border border-violet-300/40 bg-violet-300/20 px-2 py-0.5 text-xs text-violet-100">{row.plan}</span>
-                        </td>
-                        <td className="px-3 py-3">{row.tokens}</td>
-                        <td className="px-3 py-3">
-                          <span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(row.status)}`}>{row.status}</span>
-                        </td>
-                        <td className="px-3 py-3">
-                          <div className="flex gap-2">
-                            <button className="rounded-md border border-white/20 px-2 py-1 text-xs">{row.actionA}</button>
-                            <button className={`rounded-md border px-2 py-1 text-xs ${row.actionB === "Suspend" || row.actionB === "Reject" ? "border-rose-400/40 text-rose-200" : "border-white/20"}`}>
-                              {row.actionB}
-                            </button>
-                          </div>
+                    {loading ? (
+                      <tr>
+                        <td className="px-3 py-6 text-center text-slate-300" colSpan={6}>
+                          <span className="inline-flex items-center gap-2">
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Loading users...
+                          </span>
                         </td>
                       </tr>
-                    ))}
+                    ) : filteredUsers.length === 0 ? (
+                      <tr>
+                        <td className="px-3 py-6 text-center text-slate-300" colSpan={6}>
+                          No users found for current filter.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredUsers.map((row) => {
+                        const busy = actionLoadingId.startsWith(row.id);
+                        return (
+                          <tr key={row.id} className="border-t border-white/10">
+                            <td className="px-3 py-3">{row.name}{row.is_owner ? " (Owner)" : ""}</td>
+                            <td className="px-3 py-3 text-slate-400">{row.email}</td>
+                            <td className="px-3 py-3">
+                              <span className="rounded-full border border-violet-300/40 bg-violet-300/20 px-2 py-0.5 text-xs text-violet-100">{row.plan}</span>
+                            </td>
+                            <td className="px-3 py-3">{new Intl.NumberFormat("en-IN").format(row.tokens)}</td>
+                            <td className="px-3 py-3">
+                              <span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(row.status)}`}>{row.status}</span>
+                            </td>
+                            <td className="px-3 py-3">
+                              <div className="flex gap-2">
+                                {row.status === "Pending" ? (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => void runUserAction(row.id, "verify")}
+                                    className="rounded-md border border-emerald-400/40 px-2 py-1 text-xs text-emerald-200 disabled:opacity-60"
+                                  >
+                                    Verify
+                                  </button>
+                                ) : row.status === "Suspended" ? (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => void runUserAction(row.id, "reactivate")}
+                                    className="rounded-md border border-cyan-400/40 px-2 py-1 text-xs text-cyan-200 disabled:opacity-60"
+                                  >
+                                    Reactivate
+                                  </button>
+                                ) : (
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => void runUserAction(row.id, "suspend")}
+                                    className="rounded-md border border-rose-400/40 px-2 py-1 text-xs text-rose-200 disabled:opacity-60"
+                                  >
+                                    Suspend
+                                  </button>
+                                )}
+                                <button
+                                  disabled={busy}
+                                  onClick={() => void runUserAction(row.id, "reject")}
+                                  className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-200 disabled:opacity-60"
+                                >
+                                  Reject
+                                </button>
+                                <Link to="/admin/tokens">
+                                  <button className="rounded-md border border-white/20 px-2 py-1 text-xs text-slate-100">
+                                    + Tokens
+                                  </button>
+                                </Link>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -226,25 +385,25 @@ export default function AdminHub() {
           <Card className="border-white/10 bg-white/5">
             <CardContent className="py-5">
               <p className="text-xs text-slate-400">Platform users</p>
-              <p className="mt-1 text-2xl font-semibold">2,431</p>
+              <p className="mt-1 text-2xl font-semibold">{summary.total_users}</p>
             </CardContent>
           </Card>
           <Card className="border-white/10 bg-white/5">
             <CardContent className="py-5">
-              <p className="text-xs text-slate-400">MRR</p>
-              <p className="mt-1 text-2xl font-semibold">₹4.7L</p>
+              <p className="text-xs text-slate-400">Active users</p>
+              <p className="mt-1 text-2xl font-semibold">{summary.active_users}</p>
             </CardContent>
           </Card>
           <Card className="border-white/10 bg-white/5">
             <CardContent className="py-5">
-              <p className="text-xs text-slate-400">Global alerts</p>
-              <p className="mt-1 text-2xl font-semibold">17</p>
+              <p className="text-xs text-slate-400">Pending users</p>
+              <p className="mt-1 text-2xl font-semibold">{summary.pending_users}</p>
             </CardContent>
           </Card>
           <Card className="border-white/10 bg-white/5">
             <CardContent className="py-5">
-              <p className="text-xs text-slate-400">Risk</p>
-              <p className="mt-1 flex items-center gap-1.5 text-rose-200"><AlertTriangle className="h-4 w-4" /> 3 high</p>
+              <p className="text-xs text-slate-400">Suspended users</p>
+              <p className="mt-1 flex items-center gap-1.5 text-rose-200"><AlertTriangle className="h-4 w-4" /> {summary.suspended_users}</p>
             </CardContent>
           </Card>
         </section>
@@ -253,7 +412,7 @@ export default function AdminHub() {
           <Card className="border-violet-300/25 bg-violet-500/10">
             <CardContent className="py-5">
               <p className="text-sm text-violet-100">Users management</p>
-              <p className="mt-2 text-xs text-slate-300">Create, suspend, and verify accounts across plans.</p>
+              <p className="mt-2 text-xs text-slate-300">Now live with verify/suspend/reactivate/reject actions.</p>
               <Button variant="link" className="px-0 text-violet-100"><Users className="mr-1 h-4 w-4" />Open Users</Button>
             </CardContent>
           </Card>
@@ -261,7 +420,9 @@ export default function AdminHub() {
             <CardContent className="py-5">
               <p className="text-sm text-violet-100">Token overrides</p>
               <p className="mt-2 text-xs text-slate-300">Grant/revoke tokens with full audit visibility.</p>
-              <Button variant="link" className="px-0 text-violet-100"><Coins className="mr-1 h-4 w-4" />Open Token Console</Button>
+              <Link to="/admin/tokens">
+                <Button variant="link" className="px-0 text-violet-100"><Coins className="mr-1 h-4 w-4" />Open Token Console</Button>
+              </Link>
             </CardContent>
           </Card>
           <Card className="border-violet-300/25 bg-violet-500/10">

@@ -50,3 +50,6 @@ verify_jwt = true
 
 [functions.admin-token-override]
 verify_jwt = true
+
+[functions.admin-user-management]
+verify_jwt = true
