@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="650" viewBox="0 0 1100 650">
+  <defs>
+    <style>
+      .title { font: 700 24px 'Times New Roman', serif; fill: #111; }
+      .label { font: 600 18px 'Times New Roman', serif; fill: #111; }
+      .edge  { font: 500 14px 'Times New Roman', serif; fill: #222; }
+      .state { fill: #eaf2ff; stroke: #1f3a5f; stroke-width: 2; rx: 12; ry: 12; }
+      .line  { stroke: #333; stroke-width: 2; fill: none; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,4 L0,8 z" fill="#333"/>
+    </marker>
+  </defs>
+
+  <text x="550" y="40" text-anchor="middle" class="title">Fig. 8. Token Lifecycle State Machine</text>
+
+  <!-- States -->
+  <rect class="state" x="80"  y="280" width="180" height="70"/>
+  <text class="label" x="170" y="322" text-anchor="middle">Idle</text>
+
+  <rect class="state" x="320" y="280" width="210" height="70"/>
+  <text class="label" x="425" y="322" text-anchor="middle">Reserved</text>
+
+  <rect class="state" x="610" y="110" width="210" height="70"/>
+  <text class="label" x="715" y="152" text-anchor="middle">Deducted</text>
+
+  <rect class="state" x="610" y="280" width="300" height="70"/>
+  <text class="label" x="760" y="322" text-anchor="middle">Partially Refunded</text>
+
+  <rect class="state" x="610" y="450" width="260" height="70"/>
+  <text class="label" x="740" y="492" text-anchor="middle">Fully Refunded</text>
+
+  <!-- Edges -->
+  <path class="line" marker-end="url(#arrow)" d="M260,315 L320,315"/>
+  <text class="edge" x="290" y="300" text-anchor="middle">Reserve tokens</text>
+
+  <path class="line" marker-end="url(#arrow)" d="M530,285 C570,250 580,210 610,170"/>
+  <text class="edge" x="585" y="225" text-anchor="middle">Test success</text>
+
+  <path class="line" marker-end="url(#arrow)" d="M530,315 L610,315"/>
+  <text class="edge" x="570" y="300" text-anchor="middle">Partial failure</text>
+
+  <path class="line" marker-end="url(#arrow)" d="M530,345 C570,380 580,420 610,460"/>
+  <text class="edge" x="585" y="405" text-anchor="middle">Full failure</text>
+
+  <path class="line" marker-end="url(#arrow)" d="M610,145 C470,90 230,120 170,280"/>
+  <text class="edge" x="370" y="95" text-anchor="middle">Finalize</text>
+
+  <path class="line" marker-end="url(#arrow)" d="M610,315 C520,410 260,420 170,350"/>
+  <text class="edge" x="410" y="430" text-anchor="middle">Finalize</text>
+
+  <path class="line" marker-end="url(#arrow)" d="M610,485 C500,560 250,560 170,350"/>
+  <text class="edge" x="395" y="575" text-anchor="middle">Finalize</text>
+</svg>
