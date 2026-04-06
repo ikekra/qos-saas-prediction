@@ -25,9 +25,8 @@ type AdminUserRow = {
 };
 
 export default function TokenAdmin() {
-  const { user } = useAuth();
+  const { isAdmin } = useAuth();
   const { toast } = useToast();
-  const isAdmin = user?.app_metadata?.role === "admin";
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
