@@ -6,8 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Shield, Coins, Database, Sparkles, ArrowRight } from "lucide-react";
 
 export default function AdminHub() {
-  const { user } = useAuth();
-  const isAdmin = user?.app_metadata?.role === "admin";
+  const { isAdmin } = useAuth();
 
   if (!isAdmin) {
     return (
