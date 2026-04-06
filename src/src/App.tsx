@@ -72,9 +72,9 @@ const App = () => (
                   <Route path="/qos/settings" element={<ProtectedRoute><QosSettings /></ProtectedRoute>} />
                   <Route path="/settings/billing" element={<ProtectedRoute><QosSettings /></ProtectedRoute>} />
                   <Route path="/profile/payments" element={<ProtectedRoute><QosSettings /></ProtectedRoute>} />
-                  <Route path="/admin/web-services" element={<ProtectedRoute><WebServicesAdmin /></ProtectedRoute>} />
-                  <Route path="/admin/tokens" element={<ProtectedRoute><TokenAdmin /></ProtectedRoute>} />
-                  <Route path="/admin" element={<ProtectedRoute><AdminHub /></ProtectedRoute>} />
+                  <Route path="/admin/web-services" element={<ProtectedRoute requireAdmin><WebServicesAdmin /></ProtectedRoute>} />
+                  <Route path="/admin/tokens" element={<ProtectedRoute requireAdmin><TokenAdmin /></ProtectedRoute>} />
+                  <Route path="/admin" element={<ProtectedRoute requireAdmin><AdminHub /></ProtectedRoute>} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                   <Route path="/services" element={<ProtectedRoute><ServicesList /></ProtectedRoute>} />
                   <Route path="/services/new" element={<ProtectedRoute><NewService /></ProtectedRoute>} />
