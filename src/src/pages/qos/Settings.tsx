@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,7 +10,6 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { PAYMENT_ENABLED } from "@/lib/token-usage";
@@ -52,12 +51,25 @@ type PaymentRecord = {
   created_at: string;
 };
 
-const PACKAGES = [
-  { id: "starter", label: "5,000 tokens - Rs 199", pack: "starter", amount: 199, tokens: 5000 },
-  { id: "growth", label: "15,000 tokens - Rs 499", pack: "growth", amount: 499, tokens: 15000 },
-  { id: "pro", label: "50,000 tokens - Rs 1499", pack: "pro", amount: 1499, tokens: 50000 },
-  { id: "custom", label: "Custom amount", pack: "custom", amount: 0, tokens: 0 },
-] as const;
+type OnboardingPlanId = "free" | "student" | "basic" | "pro";
+
+type OnboardingPlan = {
+  id: OnboardingPlanId;
+  title: string;
+  subtitle: string;
+  amountInrMonthly: number;
+  tokens: number;
+  isStudentOnly?: boolean;
+};
+
+const ONBOARDING_PLANS: OnboardingPlan[] = [
+  { id: "free", title: "Free", subtitle: "Starter access", amountInrMonthly: 0, tokens: 500 },
+  { id: "student", title: "Student", subtitle: "College pricing", amountInrMonthly: 99, tokens: 5000, isStudentOnly: true },
+  { id: "basic", title: "Basic", subtitle: "Solo projects", amountInrMonthly: 299, tokens: 15000 },
+  { id: "pro", title: "Pro", subtitle: "Production workloads", amountInrMonthly: 999, tokens: 50000 },
+];
+
+const WORK_EMAIL_REGEX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 function csv(rows: Array<Record<string, string | number>>) {
   if (!rows.length) return "";
@@ -70,6 +82,7 @@ function csv(rows: Array<Record<string, string | number>>) {
 export default function QosSettings() {
   const { toast } = useToast();
   const location = useLocation();
+  const navigate = useNavigate();
   const { tokenUsage, refreshTokenUsage, applyOptimisticBalance, rollbackBalance, balanceRecentlyUpdated, balanceUpdatedAt, liveStatus } = useTokenUsage();
 
   const [tab, setTab] = useState<"account" | "monitoring" | "billing">("account");
@@ -89,13 +102,34 @@ export default function QosSettings() {
 
   const [topupOpen, setTopupOpen] = useState(false);
   const [topupLoading, setTopupLoading] = useState(false);
-  const [fullName, setFullName] = useState("");
-  const [selectedPackage, setSelectedPackage] = useState<"starter" | "growth" | "pro" | "custom">("growth");
-  const [customTokens, setCustomTokens] = useState("");
-  const [amountPaid, setAmountPaid] = useState("499");
-  const [notes, setNotes] = useState("");
-  const [billingAddress, setBillingAddress] = useState("");
-  const [gstId, setGstId] = useState("");
+  const [onboardingStep, setOnboardingStep] = useState<1 | 2 | 3 | 4>(1);
+  const [selectedPlan, setSelectedPlan] = useState<OnboardingPlanId>("free");
+  const [accountForm, setAccountForm] = useState({
+    firstName: "",
+    lastName: "",
+    workEmail: "",
+    orgName: "",
+    country: "",
+    role: "",
+    useCase: "",
+    acceptedTerms: false,
+    studentConfirmed: false,
+  });
+  const [accountErrors, setAccountErrors] = useState<Record<string, string>>({});
+  const [paymentForm, setPaymentForm] = useState({
+    cardNumber: "",
+    expiry: "",
+    cvv: "",
+    cardName: "",
+    billingAddress: "",
+    gstId: "",
+  });
+  const [paymentErrors, setPaymentErrors] = useState<Record<string, string>>({});
+  const [onboardingResult, setOnboardingResult] = useState<{
+    paymentRef: string;
+    tokensAdded: number;
+    planName: string;
+  } | null>(null);
 
   const [records, setRecords] = useState<TopUpRecord[]>([]);
   const [usage, setUsage] = useState<UsageRecord[]>([]);
@@ -148,7 +182,6 @@ export default function QosSettings() {
         const { data: profile } = await supabase.from("profiles").select("name, organization").eq("id", user.id).maybeSingle();
         setName(profile?.name ?? "");
         setOrganization(profile?.organization ?? "");
-        setFullName(profile?.name ?? "");
         await loadBilling(user.id);
       }
       setLoading(false);
@@ -212,9 +245,10 @@ export default function QosSettings() {
     return () => window.clearInterval(poller);
   }, [records, payments, userId]);
 
-  const selected = useMemo(() => PACKAGES.find((p) => p.id === selectedPackage) ?? PACKAGES[1], [selectedPackage]);
-  const tokensToAdd = selectedPackage === "custom" ? Number(customTokens || 0) : selected.tokens;
-  const amount = Number(amountPaid || 0);
+  const selectedPlanConfig = useMemo(
+    () => ONBOARDING_PLANS.find((plan) => plan.id === selectedPlan) ?? ONBOARDING_PLANS[0],
+    [selectedPlan],
+  );
 
   const merged = useMemo(() => {
     const t = records.map((r) => ({
@@ -257,45 +291,144 @@ export default function QosSettings() {
 
   const rows = merged.filter((r) => filter === "all" || r.category === filter);
 
-  const submitTopup = async () => {
-    if (!fullName || !email || !userId || amount <= 0 || tokensToAdd <= 0) {
-      toast({ title: "Missing details", description: "Fill all required fields.", variant: "destructive" });
+  useEffect(() => {
+    if (!topupOpen) return;
+    const [firstName = "", ...rest] = (name || "").trim().split(/\s+/);
+    const lastName = rest.join(" ");
+    setOnboardingStep(1);
+    setSelectedPlan("free");
+    setOnboardingResult(null);
+    setAccountErrors({});
+    setPaymentErrors({});
+    setAccountForm((prev) => ({
+      ...prev,
+      firstName: firstName || prev.firstName,
+      lastName: lastName || prev.lastName,
+      workEmail: email || prev.workEmail,
+      orgName: organization || prev.orgName,
+      acceptedTerms: false,
+      studentConfirmed: false,
+    }));
+    setPaymentForm({
+      cardNumber: "",
+      expiry: "",
+      cvv: "",
+      cardName: "",
+      billingAddress: "",
+      gstId: "",
+    });
+  }, [topupOpen, name, email, organization]);
+
+  const validateStep1 = () => {
+    const errors: Record<string, string> = {};
+    if (!accountForm.firstName.trim()) errors.firstName = "First name is required.";
+    if (!accountForm.lastName.trim()) errors.lastName = "Last name is required.";
+    if (!WORK_EMAIL_REGEX.test(accountForm.workEmail.trim())) errors.workEmail = "Enter a valid work email.";
+    if (!accountForm.orgName.trim()) errors.orgName = "Organisation/college is required.";
+    if (!accountForm.country.trim()) errors.country = "Country is required.";
+    if (!accountForm.role.trim()) errors.role = "Role is required.";
+    if (!accountForm.acceptedTerms) errors.acceptedTerms = "You must accept Terms & Privacy.";
+    setAccountErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const validatePaymentStep = () => {
+    const errors: Record<string, string> = {};
+    const cardDigits = paymentForm.cardNumber.replace(/\D/g, "");
+    const cvvDigits = paymentForm.cvv.replace(/\D/g, "");
+    const expiryDigits = paymentForm.expiry.replace(/\D/g, "");
+    const month = Number(expiryDigits.slice(0, 2));
+    if (cardDigits.length !== 16) errors.cardNumber = "Card number must be 16 digits.";
+    if (!paymentForm.cardName.trim()) errors.cardName = "Card holder name is required.";
+    if (expiryDigits.length !== 4 || month < 1 || month > 12) errors.expiry = "Use MM/YY format.";
+    if (cvvDigits.length !== 3) errors.cvv = "CVV must be 3 digits.";
+    if (!paymentForm.billingAddress.trim()) errors.billingAddress = "Billing address is required.";
+    setPaymentErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
+  const toCardNumber = (value: string) =>
+    value.replace(/\D/g, "").slice(0, 16).replace(/(.{4})/g, "$1 ").trim();
+
+  const toExpiry = (value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 4);
+    if (digits.length <= 2) return digits;
+    return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  };
+
+  const toCvv = (value: string) => value.replace(/\D/g, "").slice(0, 3);
+
+  const buildPaymentReference = () => {
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const token = Array.from({ length: 6 })
+      .map(() => alphabet[Math.floor(Math.random() * alphabet.length)])
+      .join("");
+    return `PS-${token}`;
+  };
+
+  const handleStep1Next = () => {
+    if (!validateStep1()) return;
+    setOnboardingStep(2);
+  };
+
+  const handleStep2Next = () => {
+    if (selectedPlanConfig.id === "free") {
+      setOnboardingResult({
+        paymentRef: buildPaymentReference(),
+        tokensAdded: 0,
+        planName: selectedPlanConfig.title,
+      });
+      setOnboardingStep(4);
       return;
     }
+    setOnboardingStep(3);
+  };
+
+  const completePaidOnboarding = async () => {
+    if (!userId) {
+      toast({ title: "Authentication required", description: "Please sign in again.", variant: "destructive" });
+      return;
+    }
+    if (!validatePaymentStep()) return;
 
     setTopupLoading(true);
     const previousBalance = tokenUsage.balance;
+    const tokensToAdd = selectedPlanConfig.tokens;
     applyOptimisticBalance(previousBalance + tokensToAdd);
+
     try {
       const payload = {
         tokensAdded: tokensToAdd,
-        amountPaid: amount,
-        packageSelected: selected.label,
-        fullName,
-        email,
-        notes,
-        billingAddress,
-        gstId,
+        amountPaid: selectedPlanConfig.amountInrMonthly,
+        packageSelected: selectedPlanConfig.title,
+        fullName: `${accountForm.firstName} ${accountForm.lastName}`.trim(),
+        email: accountForm.workEmail.trim(),
+        notes: accountForm.useCase || null,
+        billingAddress: paymentForm.billingAddress.trim(),
+        gstId: paymentForm.gstId.trim() || null,
       };
 
       const { data, error } = await invokeWithLiveToken("token-topup", { body: payload });
       if (error) throw error;
       if ((data as { error?: string } | null)?.error) throw new Error((data as { error?: string }).error);
+
       if (typeof (data as { newBalance?: number } | null)?.newBalance === "number") {
         applyOptimisticBalance((data as { newBalance: number }).newBalance);
       }
+
       await refreshTokenUsage();
       await loadBilling(userId);
-      setTopupOpen(false);
-      toast({
-        title: "Top-up successful",
-        description: `${new Intl.NumberFormat("en-IN").format(tokensToAdd)} tokens added to your account`,
+      setOnboardingResult({
+        paymentRef: buildPaymentReference(),
+        tokensAdded: tokensToAdd,
+        planName: selectedPlanConfig.title,
       });
+      setOnboardingStep(4);
     } catch (err: unknown) {
       rollbackBalance(previousBalance);
       await loadBilling(userId);
       const message = await extractFunctionErrorMessage(err, "Top-up failed");
-      toast({ title: "Top-up failed", description: message, variant: "destructive" });
+      toast({ title: "Payment failed", description: message, variant: "destructive" });
     } finally {
       setTopupLoading(false);
     }
@@ -434,47 +567,223 @@ export default function QosSettings() {
       <Dialog open={topupOpen} onOpenChange={setTopupOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Add Tokens - Top Up</DialogTitle>
-            <DialogDescription>Capture billing details and process top-up in test/live mode.</DialogDescription>
+            <DialogTitle>Subscription Onboarding</DialogTitle>
+            <DialogDescription>Step {onboardingStep} of 4</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="grid md:grid-cols-2 gap-3">
-              <div><Label>Full Name *</Label><Input value={fullName} onChange={(e) => setFullName(e.target.value)} /></div>
-              <div><Label>Account / User ID</Label><Input value={userId} readOnly /></div>
-              <div><Label>Email Address *</Label><Input value={email} onChange={(e) => setEmail(e.target.value)} /></div>
-              <div><Label>Top-Up Amount *</Label><Input value={amountPaid} onChange={(e) => setAmountPaid(e.target.value)} /></div>
-            </div>
-
-            <div>
-              <Label>Token Package</Label>
-              <RadioGroup value={selectedPackage} onValueChange={(v) => setSelectedPackage(v as "starter" | "growth" | "pro" | "custom")} className="mt-2">
-                {PACKAGES.map((p) => (
-                  <div key={p.id} className="flex items-center gap-2">
-                    <RadioGroupItem value={p.id} id={`p-${p.id}`} />
-                    <Label htmlFor={`p-${p.id}`}>{p.label}</Label>
+          <div className="space-y-5">
+            {onboardingStep === 1 && (
+              <div className="space-y-4">
+                <div className="grid md:grid-cols-2 gap-3">
+                  <div>
+                    <Label>First name *</Label>
+                    <Input
+                      value={accountForm.firstName}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, firstName: e.target.value }))}
+                    />
+                    {accountErrors.firstName && <p className="text-xs text-destructive mt-1">{accountErrors.firstName}</p>}
                   </div>
-                ))}
-              </RadioGroup>
-            </div>
+                  <div>
+                    <Label>Last name *</Label>
+                    <Input
+                      value={accountForm.lastName}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, lastName: e.target.value }))}
+                    />
+                    {accountErrors.lastName && <p className="text-xs text-destructive mt-1">{accountErrors.lastName}</p>}
+                  </div>
+                  <div>
+                    <Label>Work email *</Label>
+                    <Input
+                      value={accountForm.workEmail}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, workEmail: e.target.value }))}
+                    />
+                    {accountErrors.workEmail && <p className="text-xs text-destructive mt-1">{accountErrors.workEmail}</p>}
+                  </div>
+                  <div>
+                    <Label>Organisation / College *</Label>
+                    <Input
+                      value={accountForm.orgName}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, orgName: e.target.value }))}
+                    />
+                    {accountErrors.orgName && <p className="text-xs text-destructive mt-1">{accountErrors.orgName}</p>}
+                  </div>
+                  <div>
+                    <Label>Country *</Label>
+                    <Input
+                      value={accountForm.country}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, country: e.target.value }))}
+                    />
+                    {accountErrors.country && <p className="text-xs text-destructive mt-1">{accountErrors.country}</p>}
+                  </div>
+                  <div>
+                    <Label>Role *</Label>
+                    <Input
+                      value={accountForm.role}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, role: e.target.value }))}
+                    />
+                    {accountErrors.role && <p className="text-xs text-destructive mt-1">{accountErrors.role}</p>}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Use case (optional)</Label>
+                    <Input
+                      value={accountForm.useCase}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, useCase: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={accountForm.acceptedTerms}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, acceptedTerms: e.target.checked }))}
+                    />
+                    I accept Terms of Service and Privacy Policy.
+                  </label>
+                  {accountErrors.acceptedTerms && <p className="text-xs text-destructive">{accountErrors.acceptedTerms}</p>}
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={accountForm.studentConfirmed}
+                      onChange={(e) => setAccountForm((prev) => ({ ...prev, studentConfirmed: e.target.checked }))}
+                    />
+                    I confirm I am eligible for student pricing.
+                  </label>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setTopupOpen(false)}>Cancel</Button>
+                  <Button onClick={handleStep1Next}>Continue</Button>
+                </div>
+              </div>
+            )}
 
-            {selectedPackage === "custom" && <div><Label>Custom tokens</Label><Input value={customTokens} onChange={(e) => setCustomTokens(e.target.value)} /></div>}
+            {onboardingStep === 2 && (
+              <div className="space-y-4">
+                <div className="grid md:grid-cols-2 gap-3">
+                  {ONBOARDING_PLANS.map((plan) => {
+                    const disabled = plan.isStudentOnly && !accountForm.studentConfirmed;
+                    return (
+                      <button
+                        key={plan.id}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => setSelectedPlan(plan.id)}
+                        className={`text-left rounded-lg border p-4 transition ${
+                          selectedPlan === plan.id ? "border-primary ring-2 ring-primary/30" : "border-border"
+                        } ${disabled ? "opacity-40 cursor-not-allowed" : "hover:border-primary/60"}`}
+                      >
+                        <p className="font-semibold">{plan.title}</p>
+                        <p className="text-sm text-muted-foreground">{plan.subtitle}</p>
+                        <p className="mt-2 text-sm">
+                          {plan.amountInrMonthly === 0 ? "Free" : `Rs ${plan.amountInrMonthly}/month`}
+                        </p>
+                        <p className="text-sm text-muted-foreground">{new Intl.NumberFormat("en-IN").format(plan.tokens)} tokens</p>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="rounded-lg border bg-muted/40 p-3 text-sm">
+                  <p className="font-medium">Selected: {selectedPlanConfig.title}</p>
+                  <p>
+                    {selectedPlanConfig.amountInrMonthly === 0 ? "No payment required" : `Pay Rs ${selectedPlanConfig.amountInrMonthly}/month`}
+                  </p>
+                  <p>Tokens: {new Intl.NumberFormat("en-IN").format(selectedPlanConfig.tokens)}</p>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <Button variant="outline" onClick={() => setOnboardingStep(1)}>Back</Button>
+                  <Button onClick={handleStep2Next}>
+                    {selectedPlanConfig.id === "free" ? "Activate Free Plan" : "Continue to Payment"}
+                  </Button>
+                </div>
+              </div>
+            )}
 
-            <div className="grid md:grid-cols-2 gap-3">
-              <div><Label>Purpose / Notes</Label><Input value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
-              <div><Label>Billing Address</Label><Input value={billingAddress} onChange={(e) => setBillingAddress(e.target.value)} /></div>
-              <div className="md:col-span-2"><Label>GST / Tax ID</Label><Input value={gstId} onChange={(e) => setGstId(e.target.value)} /></div>
-            </div>
+            {onboardingStep === 3 && (
+              <div className="space-y-4">
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  Sandbox/Test Mode: No real charges will be applied.
+                </div>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <div className="md:col-span-2">
+                    <Label>Card holder name *</Label>
+                    <Input
+                      value={paymentForm.cardName}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, cardName: e.target.value }))}
+                    />
+                    {paymentErrors.cardName && <p className="text-xs text-destructive mt-1">{paymentErrors.cardName}</p>}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Card number *</Label>
+                    <Input
+                      value={paymentForm.cardNumber}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, cardNumber: toCardNumber(e.target.value) }))}
+                      placeholder="4242 4242 4242 4242"
+                    />
+                    {paymentErrors.cardNumber && <p className="text-xs text-destructive mt-1">{paymentErrors.cardNumber}</p>}
+                  </div>
+                  <div>
+                    <Label>Expiry (MM/YY) *</Label>
+                    <Input
+                      value={paymentForm.expiry}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, expiry: toExpiry(e.target.value) }))}
+                      placeholder="12/26"
+                    />
+                    {paymentErrors.expiry && <p className="text-xs text-destructive mt-1">{paymentErrors.expiry}</p>}
+                  </div>
+                  <div>
+                    <Label>CVV *</Label>
+                    <Input
+                      value={paymentForm.cvv}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, cvv: toCvv(e.target.value) }))}
+                      placeholder="123"
+                    />
+                    {paymentErrors.cvv && <p className="text-xs text-destructive mt-1">{paymentErrors.cvv}</p>}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>Billing address *</Label>
+                    <Input
+                      value={paymentForm.billingAddress}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, billingAddress: e.target.value }))}
+                    />
+                    {paymentErrors.billingAddress && <p className="text-xs text-destructive mt-1">{paymentErrors.billingAddress}</p>}
+                  </div>
+                  <div className="md:col-span-2">
+                    <Label>GST / Tax ID (optional)</Label>
+                    <Input
+                      value={paymentForm.gstId}
+                      onChange={(e) => setPaymentForm((prev) => ({ ...prev, gstId: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <Button variant="outline" onClick={() => setOnboardingStep(2)} disabled={topupLoading}>Back</Button>
+                  <Button onClick={completePaidOnboarding} disabled={topupLoading}>
+                    {topupLoading ? "Processing..." : `Pay Rs ${selectedPlanConfig.amountInrMonthly}`}
+                  </Button>
+                </div>
+              </div>
+            )}
 
-            <div className="rounded-lg bg-muted/50 p-3 text-sm">
-              <p>Tokens to add: <span className="font-semibold">{new Intl.NumberFormat("en-IN").format(tokensToAdd)}</span></p>
-              <p>Amount: <span className="font-semibold">{new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(amount)}</span></p>
-              <p>New balance after: <span className="font-semibold">{new Intl.NumberFormat("en-IN").format(tokenUsage.balance + tokensToAdd)} tokens</span></p>
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setTopupOpen(false)} disabled={topupLoading}>Cancel</Button>
-              <Button onClick={submitTopup} disabled={topupLoading}>{topupLoading ? "Processing..." : "Confirm Top-Up"}</Button>
-            </div>
+            {onboardingStep === 4 && onboardingResult && (
+              <div className="space-y-4">
+                <div className="rounded-lg border bg-emerald-50 p-4">
+                  <p className="text-sm text-emerald-800">Subscription activated successfully.</p>
+                  <p className="font-semibold mt-1">Payment reference: {onboardingResult.paymentRef}</p>
+                  <p className="text-sm mt-1">Plan: {onboardingResult.planName}</p>
+                  <p className="text-sm mt-1">Tokens added: {new Intl.NumberFormat("en-IN").format(onboardingResult.tokensAdded)}</p>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setTopupOpen(false)}>Close</Button>
+                  <Button
+                    onClick={() => {
+                      setTopupOpen(false);
+                      navigate("/qos/predict");
+                    }}
+                  >
+                    Run first prediction
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>
