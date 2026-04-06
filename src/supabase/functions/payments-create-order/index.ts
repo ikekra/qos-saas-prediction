@@ -2,8 +2,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 };
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -12,7 +13,7 @@ const jsonResponse = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 
-type PackName = "starter" | "growth" | "pro" | "custom";
+type PackName = "student" | "basic" | "pro" | "enterprise" | "starter" | "growth" | "custom";
 
 type CreateOrderBody = {
   pack?: PackName;
@@ -33,9 +34,12 @@ type CreditTokensResponse = {
 };
 
 const PACKS: Record<Exclude<PackName, "custom">, PackConfig> = {
-  starter: { amountInRupees: 199, tokens: 5000 },
-  growth: { amountInRupees: 499, tokens: 15000 },
-  pro: { amountInRupees: 1499, tokens: 50000 },
+  student: { amountInRupees: 99, tokens: 5000 },
+  basic: { amountInRupees: 299, tokens: 15000 },
+  pro: { amountInRupees: 999, tokens: 50000 },
+  enterprise: { amountInRupees: 2499, tokens: 150000 },
+  starter: { amountInRupees: 99, tokens: 5000 },
+  growth: { amountInRupees: 299, tokens: 15000 },
 };
 
 const RAZORPAY_ORDERS_URL = "https://api.razorpay.com/v1/orders";
@@ -56,8 +60,8 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-  const billingMode = (Deno.env.get("BILLING_MODE") ?? "mock").toLowerCase();
-  const isMockMode = billingMode === "mock";
+  const paymentModeRaw = (Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "sandbox").toLowerCase();
+  const isMockMode = paymentModeRaw === "mock" || paymentModeRaw === "sandbox" || paymentModeRaw === "test";
   const razorpayKeyId = Deno.env.get("RAZORPAY_KEY_ID") ?? "";
   const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
@@ -83,7 +87,7 @@ serve(async (req) => {
 
     const body = (await req.json().catch(() => ({}))) as CreateOrderBody;
     const pack = body.pack;
-    if (!pack || !["starter", "growth", "pro", "custom"].includes(pack)) {
+    if (!pack || !["student", "basic", "pro", "enterprise", "starter", "growth", "custom"].includes(pack)) {
       return jsonResponse({ error: "Invalid pack value." }, 400);
     }
 
