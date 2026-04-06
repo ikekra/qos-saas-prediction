@@ -7,6 +7,8 @@ interface AuthContextType {
   user: User | null;
   session: Session | null;
   accessToken: string | null;
+  isAdmin: boolean;
+  adminLoading: boolean;
   loading: boolean;
   signUp: (email: string, password: string, name: string) => Promise<{ error: Error | null }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
@@ -16,11 +18,14 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const OWNER_ADMIN_EMAILS = new Set(["chagankekra13@gmail.com"]);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminLoading, setAdminLoading] = useState(true);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -44,6 +49,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const resolveAdminAccess = async () => {
+      if (!user) {
+        setIsAdmin(false);
+        setAdminLoading(false);
+        return;
+      }
+
+      setAdminLoading(true);
+      try {
+        const email = (user.email || "").toLowerCase();
+        if (OWNER_ADMIN_EMAILS.has(email)) {
+          setIsAdmin(true);
+          setAdminLoading(false);
+          return;
+        }
+
+        const localAdmin =
+          user.app_metadata?.role === "admin" || user.user_metadata?.role === "admin";
+        if (localAdmin) {
+          setIsAdmin(true);
+          setAdminLoading(false);
+          return;
+        }
+
+        const [{ data: authUser }, { data: profile }] = await Promise.all([
+          supabase.auth.getUser(),
+          supabase
+            .from("profiles")
+            .select("role")
+            .eq("id", user.id)
+            .maybeSingle(),
+        ]);
+
+        const remoteRole = authUser?.user?.app_metadata?.role;
+        const profileRole = profile?.role;
+        setIsAdmin(remoteRole === "admin" || profileRole === "admin");
+      } catch {
+        setIsAdmin(false);
+      } finally {
+        setAdminLoading(false);
+      }
+    };
+
+    void resolveAdminAccess();
+  }, [user?.id, user?.email, user?.app_metadata?.role, user?.user_metadata?.role]);
 
   const signUp = async (email: string, password: string, name: string) => {
     try {
@@ -109,7 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, accessToken, loading, signUp, signIn, signOut, resetPassword, getAccessToken }}>
+    <AuthContext.Provider value={{ user, session, accessToken, isAdmin, adminLoading, loading, signUp, signIn, signOut, resetPassword, getAccessToken }}>
       {children}
     </AuthContext.Provider>
   );
