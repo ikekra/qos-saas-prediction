@@ -55,8 +55,7 @@ const emptyForm: ServiceForm = {
 
 export default function WebServicesAdmin() {
   const { toast } = useToast();
-  const { user } = useAuth();
-  const isAdmin = user?.app_metadata?.role === "admin";
+  const { isAdmin } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [services, setServices] = useState<WebService[]>([]);
@@ -357,7 +356,7 @@ export default function WebServicesAdmin() {
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="font-semibold">{service.name}</p>
-                          <p className="text-xs text-muted-foreground">{service.provider} · {service.category}</p>
+                          <p className="text-xs text-muted-foreground">{service.provider} - {service.category}</p>
                         </div>
                         <span className={`text-xs ${service.is_active ? "text-emerald-600" : "text-muted-foreground"}`}>
                           {service.is_active ? "Active" : "Inactive"}
