@@ -39,6 +39,7 @@ import {
 export function Header() {
   const { user, signOut, isAdmin } = useAuth();
   const navigate = useNavigate();
+  const dashboardPath = isAdmin ? '/admin/dashboard' : '/dashboard';
   const [unreadCount, setUnreadCount] = useState(0);
   const { tokenUsage, liveStatus } = useTokenUsage();
 
@@ -78,7 +79,7 @@ export function Header() {
         <nav className="flex items-center gap-3">
           {user ? (
             <div className="hidden items-center gap-1 md:flex">
-              <Link to="/dashboard">
+              <Link to={dashboardPath}>
                 <Button variant="ghost" size="sm">
                   Dashboard
                 </Button>

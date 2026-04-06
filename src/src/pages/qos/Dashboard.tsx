@@ -421,42 +421,6 @@ export default function QosDashboard() {
           </div>
         </motion.div>
 
-        <motion.div
-          className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_1fr]"
-          initial={{ opacity: 0, y: 14 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.45, delay: 0.1 }}
-        >
-          <Card className="border-cyan-400/30 bg-cyan-500/10">
-            <CardHeader>
-              <CardTitle className="text-cyan-900 dark:text-cyan-100">Standard User Workspace</CardTitle>
-              <CardDescription className="text-cyan-800/90 dark:text-cyan-100/85">
-                Personal scope only. This dashboard is intentionally isolated from global admin controls.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-2 text-sm text-cyan-900 dark:text-cyan-50">
-              <p>- Personal services and personal metrics only</p>
-              <p>- Own tokens and own billing actions only</p>
-              <p>- Own alerts and own API keys only</p>
-              <p>- No access to global config, audit logs, or other accounts</p>
-            </CardContent>
-          </Card>
-
-          <Card className="border-violet-400/25 bg-violet-500/10">
-            <CardHeader>
-              <CardTitle className="text-violet-900 dark:text-violet-100">Need Platform Controls?</CardTitle>
-              <CardDescription className="text-violet-800/90 dark:text-violet-100/85">
-                Admin-only operations like token overrides, user suspension, and system config are restricted.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Link to="/admin">
-                <Button className="w-full">Open Admin Console</Button>
-              </Link>
-            </CardContent>
-          </Card>
-        </motion.div>
-
         {/* Alerts Section */}
         {alerts.length > 0 && (
           <motion.div
