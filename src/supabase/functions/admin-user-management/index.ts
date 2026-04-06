@@ -126,7 +126,58 @@ serve(async (req) => {
         suspended_users: rows.filter((r) => r.status === "Suspended").length,
       };
 
-      return jsonResponse({ success: true, summary, users: rows }, 200, req);
+      const { data: tokenSummaryData } = await adminClient.rpc("get_token_admin_summary");
+      const tokenSummaryRow = Array.isArray(tokenSummaryData) ? tokenSummaryData[0] : tokenSummaryData;
+
+      const { data: services, error: servicesErr } = await adminClient
+        .from("web_services")
+        .select("id, name, provider, category, is_active, updated_at")
+        .order("updated_at", { ascending: false })
+        .limit(200);
+
+      if (servicesErr) return jsonResponse({ error: "Failed to load services", details: servicesErr.message }, 500, req);
+
+      const serviceRows = (services ?? []).map((s) => ({
+        id: s.id,
+        name: s.name,
+        provider: s.provider,
+        category: s.category,
+        is_active: Boolean(s.is_active),
+        updated_at: s.updated_at,
+      }));
+
+      const servicesSummary = {
+        total_services: serviceRows.length,
+        active_services: serviceRows.filter((s) => s.is_active).length,
+        inactive_services: serviceRows.filter((s) => !s.is_active).length,
+      };
+
+      const { data: recentAudit, error: recentAuditErr } = await adminClient
+        .from("admin_audit_logs")
+        .select("id, created_at, actor_email, action, target_email, target_user_id, status, reason")
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (recentAuditErr) {
+        return jsonResponse({ error: "Failed to load audit logs", details: recentAuditErr.message }, 500, req);
+      }
+
+      return jsonResponse(
+        {
+          success: true,
+          summary,
+          token_summary: {
+            total_token_balance: asNumber(tokenSummaryRow?.total_token_balance, 0),
+            total_lifetime_tokens_used: asNumber(tokenSummaryRow?.total_lifetime_tokens_used, 0),
+          },
+          services_summary: servicesSummary,
+          users: rows,
+          services: serviceRows.slice(0, 80),
+          recent_audit: recentAudit ?? [],
+        },
+        200,
+        req,
+      );
     }
 
     const body = (await req.json().catch(() => ({}))) as {

@@ -21,7 +21,6 @@ import {
   MessageSquare,
   MoreHorizontal,
   Settings,
-  Shield,
   Sparkles,
   Stars,
   TestTube,
@@ -99,6 +98,25 @@ export function Header() {
                   Compare
                 </Button>
               </Link>
+              {isAdmin && (
+                <>
+                  <Link to="/admin/dashboard">
+                    <Button variant="ghost" size="sm">
+                      Admin Dashboard
+                    </Button>
+                  </Link>
+                  <Link to="/admin">
+                    <Button variant="ghost" size="sm">
+                      Admin Hub
+                    </Button>
+                  </Link>
+                  <Link to="/admin/web-services">
+                    <Button variant="ghost" size="sm">
+                      Admin Services
+                    </Button>
+                  </Link>
+                </>
+              )}
             </div>
           ) : null}
 
@@ -213,18 +231,6 @@ export function Header() {
                     {isAdmin && (
                       <>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <Link to="/admin" className="flex items-center gap-2">
-                            <Sparkles className="h-4 w-4" />
-                            Admin Hub
-                          </Link>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem asChild>
-                          <Link to="/admin/web-services" className="flex items-center gap-2">
-                            <Shield className="h-4 w-4" />
-                            Admin Services
-                          </Link>
-                        </DropdownMenuItem>
                         <DropdownMenuItem asChild>
                           <Link to="/admin/tokens" className="flex items-center gap-2">
                             <Coins className="h-4 w-4" />

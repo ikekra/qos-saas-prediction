@@ -1,45 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Header } from "@/components/Header";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
-import {
-  AlertTriangle,
-  ArrowUpRight,
-  Coins,
-  Crown,
-  KeyRound,
-  Loader2,
-  ReceiptText,
-  Settings2,
-  Shield,
-  UserCircle2,
-  Users,
-} from "lucide-react";
+import { Loader2, Shield, Users, Database, ReceiptText, Coins } from "lucide-react";
 
-const adminScope = [
-  "Global dashboard - all users, all services, platform-wide metrics",
-  "User management - create, suspend, delete, and role updates",
-  "Token override - grant or revoke any user's balance",
-  "Billing control - refunds, invoices, and plan overrides",
-  "Audit logs - full action trail across all accounts",
-  "System config - token costs, rate limits, and alerts",
-  "API key governance - rotate platform keys and emergency revoke",
-];
-
-const userScope = [
-  "Personal dashboard - only their registered services",
-  "Token balance - view and top up only their own account",
-  "Own billing - invoices and personal plan updates",
-  "Personal alerts - thresholds for their own services only",
-  "Own API keys - create and rotate keys for self",
-  "No access to other users, audit logs, or global config",
-];
+type AdminTab = "overview" | "users" | "services" | "audit";
 
 type LiveUserRow = {
   id: string;
@@ -48,15 +19,49 @@ type LiveUserRow = {
   plan: string;
   tokens: number;
   status: "Active" | "Pending" | "Suspended" | "Low tokens";
-  email_verified: boolean;
   is_owner: boolean;
 };
 
-type UserSummary = {
-  total_users: number;
-  active_users: number;
-  pending_users: number;
-  suspended_users: number;
+type ServiceRow = {
+  id: string;
+  name: string;
+  provider: string;
+  category: string;
+  is_active: boolean;
+  updated_at: string | null;
+};
+
+type AuditRow = {
+  id: string;
+  created_at: string;
+  actor_email: string | null;
+  action: string;
+  target_email: string | null;
+  target_user_id: string | null;
+  status: string;
+  reason: string | null;
+};
+
+type AdminHubResponse = {
+  success: boolean;
+  summary: {
+    total_users: number;
+    active_users: number;
+    pending_users: number;
+    suspended_users: number;
+  };
+  token_summary: {
+    total_token_balance: number;
+    total_lifetime_tokens_used: number;
+  };
+  services_summary: {
+    total_services: number;
+    active_services: number;
+    inactive_services: number;
+  };
+  users: LiveUserRow[];
+  services: ServiceRow[];
+  recent_audit: AuditRow[];
 };
 
 function statusClass(status: string) {
@@ -69,45 +74,21 @@ function statusClass(status: string) {
 export default function AdminHub() {
   const { isAdmin } = useAuth();
   const { toast } = useToast();
-  const [query, setQuery] = useState("");
-  const [planFilter, setPlanFilter] = useState("all");
+  const [tab, setTab] = useState<AdminTab>("overview");
   const [loading, setLoading] = useState(true);
   const [actionLoadingId, setActionLoadingId] = useState("");
-  const [users, setUsers] = useState<LiveUserRow[]>([]);
-  const [summary, setSummary] = useState<UserSummary>({
-    total_users: 0,
-    active_users: 0,
-    pending_users: 0,
-    suspended_users: 0,
-  });
+  const [query, setQuery] = useState("");
+  const [payload, setPayload] = useState<AdminHubResponse | null>(null);
 
-  const filteredUsers = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return users.filter((row) => {
-      if (planFilter !== "all" && row.plan.toLowerCase() !== planFilter) return false;
-      if (!q) return true;
-      return `${row.name} ${row.email} ${row.id} ${row.plan}`.toLowerCase().includes(q);
-    });
-  }, [users, query, planFilter]);
-
-  const fetchUsers = async () => {
+  const fetchHub = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.set("limit", "200");
-      const { data, error } = await invokeWithLiveToken<{
-        success: boolean;
-        summary: UserSummary;
-        users: LiveUserRow[];
-      }>(`admin-user-management?${params.toString()}`);
-
+      const { data, error } = await invokeWithLiveToken<AdminHubResponse>("admin-user-management?limit=200");
       if (error) throw error;
-      if (!data?.success) throw new Error("Failed to load users");
-
-      setSummary(data.summary || { total_users: 0, active_users: 0, pending_users: 0, suspended_users: 0 });
-      setUsers(data.users || []);
+      if (!data?.success) throw new Error("Failed to load admin hub data");
+      setPayload(data);
     } catch (err: unknown) {
-      const message = await extractFunctionErrorMessage(err, "Failed to load admin users");
+      const message = await extractFunctionErrorMessage(err, "Failed to load admin dashboard");
       toast({ title: "Load failed", description: message, variant: "destructive" });
     } finally {
       setLoading(false);
@@ -116,8 +97,24 @@ export default function AdminHub() {
 
   useEffect(() => {
     if (!isAdmin) return;
-    void fetchUsers();
+    void fetchHub();
   }, [isAdmin]);
+
+  const users = payload?.users ?? [];
+  const services = payload?.services ?? [];
+  const auditRows = payload?.recent_audit ?? [];
+
+  const filteredUsers = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((row) => `${row.name} ${row.email} ${row.id} ${row.plan}`.toLowerCase().includes(q));
+  }, [query, users]);
+
+  const filteredServices = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return services;
+    return services.filter((row) => `${row.name} ${row.provider} ${row.category}`.toLowerCase().includes(q));
+  }, [query, services]);
 
   const runUserAction = async (targetUserId: string, action: "verify" | "suspend" | "reactivate" | "reject") => {
     setActionLoadingId(`${targetUserId}:${action}`);
@@ -126,13 +123,13 @@ export default function AdminHub() {
         body: {
           target_user_id: targetUserId,
           action,
-          reason: `Admin console action: ${action}`,
+          reason: `Admin hub action: ${action}`,
         },
       });
       if (error) throw error;
       if (!data?.success) throw new Error("Action failed");
       toast({ title: `User ${action} successful` });
-      await fetchUsers();
+      await fetchHub();
     } catch (err: unknown) {
       const message = await extractFunctionErrorMessage(err, `Failed to ${action} user`);
       toast({ title: "Action failed", description: message, variant: "destructive" });
@@ -147,302 +144,193 @@ export default function AdminHub() {
         <Header />
         <div className="container py-10">
           <Card>
-            <CardContent className="py-10 text-center text-muted-foreground">
-              Admin access required.
-            </CardContent>
+            <CardContent className="py-10 text-center text-muted-foreground">Admin access required.</CardContent>
           </Card>
         </div>
       </div>
     );
   }
 
+  const tabButton = (id: AdminTab, label: string) => (
+    <button
+      type="button"
+      onClick={() => setTab(id)}
+      className={`rounded-xl border px-4 py-2 text-sm ${
+        tab === id ? "border-violet-300 bg-violet-200 text-slate-900" : "border-white/20 bg-white/5 text-white"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
   return (
     <div className="min-h-screen bg-[#07070a] text-slate-100">
       <Header />
-      <div className="container py-8 space-y-8">
-        <div className="rounded-3xl border border-violet-300/30 bg-gradient-to-r from-[#2f2a56] via-[#463f7f] to-[#6e63b6] p-8 shadow-2xl">
-          <div className="flex flex-wrap items-center gap-3">
-            <Badge className="bg-white/20 text-white hover:bg-white/20">
-              <Crown className="mr-1.5 h-3.5 w-3.5" />
-              PerfSense Admin Console
-            </Badge>
-            <Badge variant="outline" className="border-violet-200/50 text-violet-50">
-              v1.0.0 sandbox
-            </Badge>
+      <div className="container py-8 space-y-6">
+        <div className="rounded-3xl border border-violet-300/30 bg-gradient-to-r from-[#2f2a56] via-[#463f7f] to-[#6e63b6] p-7 shadow-2xl">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="inline-flex items-center gap-2 rounded-full bg-white/20 px-3 py-1 text-xs font-medium">
+                <Shield className="h-3.5 w-3.5" />
+                Admin control plane
+              </p>
+              <h1 className="mt-3 text-3xl font-semibold">Live Admin Hub</h1>
+              <p className="mt-1 text-sm text-violet-50/90">Role-separated real-time dashboard for owner actions.</p>
+            </div>
+            <Button onClick={() => void fetchHub()} className="bg-white text-slate-900 hover:bg-white/90">Refresh</Button>
           </div>
-          <h1 className="mt-4 text-4xl font-semibold tracking-tight">Admin vs User Authority Dashboard</h1>
-          <p className="mt-2 max-w-3xl text-violet-50/90">
-            Dedicated control plane for project owners with explicit separation from standard user experience.
-          </p>
         </div>
 
-        <section className="grid gap-5 lg:grid-cols-2">
-          <Card className="border-violet-300/30 bg-[#12121a]">
-            <CardHeader>
-              <CardTitle className="text-violet-100 flex items-center gap-2">
-                <Shield className="h-5 w-5" />
-                Super Admin
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              {adminScope.map((line) => (
-                <div key={line} className="flex items-start gap-2 text-slate-200">
-                  <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-violet-400" />
-                  <span>{line}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+        <div className="flex flex-wrap gap-2">
+          {tabButton("overview", "Overview")}
+          {tabButton("users", "Users")}
+          {tabButton("services", "Services")}
+          {tabButton("audit", "Audit")}
+        </div>
 
-          <Card className="border-cyan-300/30 bg-[#12121a]">
-            <CardHeader>
-              <CardTitle className="text-cyan-100 flex items-center gap-2">
-                <UserCircle2 className="h-5 w-5" />
-                Standard User
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm">
-              {userScope.map((line) => (
-                <div key={line} className="flex items-start gap-2 text-slate-200">
-                  <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-cyan-400" />
-                  <span>{line}</span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </section>
-
-        <section className="rounded-3xl border border-violet-200/20 bg-[#0f1016] p-4 shadow-xl lg:p-6">
-          <div className="mb-4 flex flex-wrap gap-2">
-            {["Overview", "Users", "Billing", "System config"].map((tab, index) => (
-              <button
-                key={tab}
-                type="button"
-                className={`rounded-xl border px-4 py-2 text-sm ${index === 1 ? "border-violet-300 bg-violet-200 text-slate-900" : "border-white/20 bg-white/5 text-white"}`}
-              >
-                {tab}
-              </button>
-            ))}
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="mb-4">
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={tab === "services" ? "Search services..." : tab === "audit" ? "Search email/action..." : "Search users..."}
+              className="max-w-[440px] border-white/20 bg-black/20 text-slate-100 placeholder:text-slate-400"
+            />
           </div>
 
-          <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
-            <aside className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <p className="mb-3 text-xs tracking-[0.18em] text-slate-400">PLATFORM</p>
-              <div className="space-y-1 text-sm">
-                <div className="rounded-lg px-3 py-2 text-slate-300">Overview</div>
-                <div className="rounded-lg bg-violet-200 px-3 py-2 text-slate-900">Users</div>
-                <div className="rounded-lg px-3 py-2 text-slate-300">Billing</div>
-              </div>
-              <p className="mb-3 mt-5 text-xs tracking-[0.18em] text-slate-400">CONFIG</p>
-              <div className="space-y-1 text-sm">
-                <div className="rounded-lg px-3 py-2 text-slate-300">System config</div>
-                <div className="rounded-lg px-3 py-2 text-slate-300">Audit logs</div>
-                <div className="rounded-lg px-3 py-2 text-slate-300">Global alerts</div>
-              </div>
-              <p className="mb-3 mt-5 text-xs tracking-[0.18em] text-slate-400">TOOLS</p>
-              <div className="space-y-1 text-sm">
-                <Link to="/admin/tokens" className="block rounded-lg px-3 py-2 text-slate-300 hover:bg-white/10">Token override</Link>
-                <div className="rounded-lg px-3 py-2 text-slate-300">API keys</div>
-              </div>
-            </aside>
-
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="mb-3 flex flex-wrap gap-3">
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search users by name, email, plan..."
-                  className="max-w-[420px] border-white/20 bg-black/15 text-slate-100 placeholder:text-slate-400"
-                />
-                <select
-                  value={planFilter}
-                  onChange={(e) => setPlanFilter(e.target.value)}
-                  className="rounded-xl border border-white/15 bg-black/10 px-4 py-2 text-sm text-slate-300"
-                >
-                  <option value="all">All plans</option>
-                  <option value="free">Free</option>
-                  <option value="student">Student</option>
-                  <option value="basic">Basic</option>
-                  <option value="pro">Pro</option>
-                  <option value="enterprise">Enterprise</option>
-                </select>
-                <Button onClick={() => void fetchUsers()} className="bg-violet-500 hover:bg-violet-400">
-                  Refresh
-                </Button>
-              </div>
-
-              <div className="overflow-x-auto rounded-xl border border-white/10">
-                <table className="w-full min-w-[860px] text-left text-sm">
-                  <thead className="bg-black/20 text-slate-300">
-                    <tr>
-                      <th className="px-3 py-2 font-medium">Name</th>
-                      <th className="px-3 py-2 font-medium">Email</th>
-                      <th className="px-3 py-2 font-medium">Plan</th>
-                      <th className="px-3 py-2 font-medium">Tokens</th>
-                      <th className="px-3 py-2 font-medium">Status</th>
-                      <th className="px-3 py-2 font-medium">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {loading ? (
-                      <tr>
-                        <td className="px-3 py-6 text-center text-slate-300" colSpan={6}>
-                          <span className="inline-flex items-center gap-2">
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Loading users...
-                          </span>
-                        </td>
-                      </tr>
-                    ) : filteredUsers.length === 0 ? (
-                      <tr>
-                        <td className="px-3 py-6 text-center text-slate-300" colSpan={6}>
-                          No users found for current filter.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredUsers.map((row) => {
-                        const busy = actionLoadingId.startsWith(row.id);
-                        return (
-                          <tr key={row.id} className="border-t border-white/10">
-                            <td className="px-3 py-3">{row.name}{row.is_owner ? " (Owner)" : ""}</td>
-                            <td className="px-3 py-3 text-slate-400">{row.email}</td>
-                            <td className="px-3 py-3">
-                              <span className="rounded-full border border-violet-300/40 bg-violet-300/20 px-2 py-0.5 text-xs text-violet-100">{row.plan}</span>
-                            </td>
-                            <td className="px-3 py-3">{new Intl.NumberFormat("en-IN").format(row.tokens)}</td>
-                            <td className="px-3 py-3">
-                              <span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(row.status)}`}>{row.status}</span>
-                            </td>
-                            <td className="px-3 py-3">
-                              <div className="flex gap-2">
-                                {row.status === "Pending" ? (
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => void runUserAction(row.id, "verify")}
-                                    className="rounded-md border border-emerald-400/40 px-2 py-1 text-xs text-emerald-200 disabled:opacity-60"
-                                  >
-                                    Verify
-                                  </button>
-                                ) : row.status === "Suspended" ? (
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => void runUserAction(row.id, "reactivate")}
-                                    className="rounded-md border border-cyan-400/40 px-2 py-1 text-xs text-cyan-200 disabled:opacity-60"
-                                  >
-                                    Reactivate
-                                  </button>
-                                ) : (
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => void runUserAction(row.id, "suspend")}
-                                    className="rounded-md border border-rose-400/40 px-2 py-1 text-xs text-rose-200 disabled:opacity-60"
-                                  >
-                                    Suspend
-                                  </button>
-                                )}
-                                <button
-                                  disabled={busy}
-                                  onClick={() => void runUserAction(row.id, "reject")}
-                                  className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-200 disabled:opacity-60"
-                                >
-                                  Reject
-                                </button>
-                                <Link to="/admin/tokens">
-                                  <button className="rounded-md border border-white/20 px-2 py-1 text-xs text-slate-100">
-                                    + Tokens
-                                  </button>
-                                </Link>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
+          {loading ? (
+            <div className="py-14 text-center text-slate-300">
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading live admin data...
+              </span>
             </div>
-          </div>
-        </section>
+          ) : tab === "overview" ? (
+            <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-6">
+              <Card className="border-white/10 bg-black/20"><CardHeader><CardDescription>Total users</CardDescription><CardTitle>{payload?.summary.total_users ?? 0}</CardTitle></CardHeader></Card>
+              <Card className="border-white/10 bg-black/20"><CardHeader><CardDescription>Active users</CardDescription><CardTitle>{payload?.summary.active_users ?? 0}</CardTitle></CardHeader></Card>
+              <Card className="border-white/10 bg-black/20"><CardHeader><CardDescription>Suspended</CardDescription><CardTitle>{payload?.summary.suspended_users ?? 0}</CardTitle></CardHeader></Card>
+              <Card className="border-white/10 bg-black/20"><CardHeader><CardDescription>Total services</CardDescription><CardTitle>{payload?.services_summary.total_services ?? 0}</CardTitle></CardHeader></Card>
+              <Card className="border-white/10 bg-black/20"><CardHeader><CardDescription>Token pool</CardDescription><CardTitle>{new Intl.NumberFormat("en-IN").format(payload?.token_summary.total_token_balance ?? 0)}</CardTitle></CardHeader></Card>
+              <Card className="border-white/10 bg-black/20"><CardHeader><CardDescription>Lifetime usage</CardDescription><CardTitle>{new Intl.NumberFormat("en-IN").format(payload?.token_summary.total_lifetime_tokens_used ?? 0)}</CardTitle></CardHeader></Card>
 
-        <section className="rounded-3xl border border-violet-300/20 bg-[#0f1016] p-6">
-          <h2 className="text-lg font-semibold text-violet-100">Admin System Prompt</h2>
-          <div className="mt-3 space-y-3 text-sm text-slate-300">
-            <p>You are PerfSense Admin AI with full read/write platform access for users, tokens, billing, services, and audit data.</p>
-            <p>Require <code>CONFIRM_OVERRIDE</code> before any token cost, rate limit, or threshold update.</p>
-            <p>Destructive actions must write to audit log before execution and include actor, timestamp, target, and reason.</p>
-            <p>Bulk updates for 50+ users require additional explicit confirmation and must be flagged as high-risk.</p>
-            <p>Switching payment mode from sandbox to live requires phrase <code>CONFIRM_LIVE_MODE</code>.</p>
-          </div>
-          <div className="mt-5 flex flex-wrap gap-3">
-            <Button className="bg-violet-500 hover:bg-violet-400"><Shield className="mr-1.5 h-4 w-4" />Generate RBAC middleware <ArrowUpRight className="ml-1 h-4 w-4" /></Button>
-            <Button variant="outline" className="border-violet-300/40 text-violet-100"><ReceiptText className="mr-1.5 h-4 w-4" />Audit log schema <ArrowUpRight className="ml-1 h-4 w-4" /></Button>
-            <Button variant="outline" className="border-violet-300/40 text-violet-100"><Coins className="mr-1.5 h-4 w-4" />Token override API <ArrowUpRight className="ml-1 h-4 w-4" /></Button>
-          </div>
-        </section>
-
-        <section className="grid gap-4 md:grid-cols-4">
-          <Card className="border-white/10 bg-white/5">
-            <CardContent className="py-5">
-              <p className="text-xs text-slate-400">Platform users</p>
-              <p className="mt-1 text-2xl font-semibold">{summary.total_users}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-white/10 bg-white/5">
-            <CardContent className="py-5">
-              <p className="text-xs text-slate-400">Active users</p>
-              <p className="mt-1 text-2xl font-semibold">{summary.active_users}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-white/10 bg-white/5">
-            <CardContent className="py-5">
-              <p className="text-xs text-slate-400">Pending users</p>
-              <p className="mt-1 text-2xl font-semibold">{summary.pending_users}</p>
-            </CardContent>
-          </Card>
-          <Card className="border-white/10 bg-white/5">
-            <CardContent className="py-5">
-              <p className="text-xs text-slate-400">Suspended users</p>
-              <p className="mt-1 flex items-center gap-1.5 text-rose-200"><AlertTriangle className="h-4 w-4" /> {summary.suspended_users}</p>
-            </CardContent>
-          </Card>
-        </section>
-
-        <section className="grid gap-4 md:grid-cols-3">
-          <Card className="border-violet-300/25 bg-violet-500/10">
-            <CardContent className="py-5">
-              <p className="text-sm text-violet-100">Users management</p>
-              <p className="mt-2 text-xs text-slate-300">Now live with verify/suspend/reactivate/reject actions.</p>
-              <Button variant="link" className="px-0 text-violet-100"><Users className="mr-1 h-4 w-4" />Open Users</Button>
-            </CardContent>
-          </Card>
-          <Card className="border-violet-300/25 bg-violet-500/10">
-            <CardContent className="py-5">
-              <p className="text-sm text-violet-100">Token overrides</p>
-              <p className="mt-2 text-xs text-slate-300">Grant/revoke tokens with full audit visibility.</p>
-              <Link to="/admin/tokens">
-                <Button variant="link" className="px-0 text-violet-100"><Coins className="mr-1 h-4 w-4" />Open Token Console</Button>
-              </Link>
-            </CardContent>
-          </Card>
-          <Card className="border-violet-300/25 bg-violet-500/10">
-            <CardContent className="py-5">
-              <p className="text-sm text-violet-100">System config</p>
-              <p className="mt-2 text-xs text-slate-300">Rate limits, costs, and platform alert thresholds.</p>
-              <Button variant="link" className="px-0 text-violet-100"><Settings2 className="mr-1 h-4 w-4" />Open Config</Button>
-            </CardContent>
-          </Card>
-        </section>
-
-        <section className="rounded-3xl border border-cyan-300/20 bg-cyan-500/10 p-5">
-          <h3 className="flex items-center gap-2 text-base font-semibold text-cyan-100">
-            <KeyRound className="h-4 w-4" />
-            User UI Contract
-          </h3>
-          <p className="mt-2 text-sm text-cyan-50/90">
-            Standard users see only personal services, personal billing, and personal token actions. No global user, config, or audit controls are exposed in user routes.
-          </p>
-        </section>
+              <Card className="border-white/10 bg-black/20 md:col-span-3">
+                <CardHeader>
+                  <CardTitle className="text-base">Quick Navigation</CardTitle>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-2">
+                  <Link to="/admin/tokens"><Button size="sm"><Coins className="mr-1.5 h-4 w-4" />Admin Tokens</Button></Link>
+                  <Link to="/admin/web-services"><Button size="sm" variant="outline"><Database className="mr-1.5 h-4 w-4" />Admin Services</Button></Link>
+                  <Button size="sm" variant="outline"><Users className="mr-1.5 h-4 w-4" />User Controls</Button>
+                  <Button size="sm" variant="outline"><ReceiptText className="mr-1.5 h-4 w-4" />Audit</Button>
+                </CardContent>
+              </Card>
+            </div>
+          ) : tab === "users" ? (
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="w-full min-w-[840px] text-left text-sm">
+                <thead className="bg-black/25 text-slate-300">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Name</th>
+                    <th className="px-3 py-2 font-medium">Email</th>
+                    <th className="px-3 py-2 font-medium">Plan</th>
+                    <th className="px-3 py-2 font-medium">Tokens</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredUsers.map((row) => {
+                    const busy = actionLoadingId.startsWith(row.id);
+                    return (
+                      <tr key={row.id} className="border-t border-white/10">
+                        <td className="px-3 py-3">{row.name}{row.is_owner ? " (Owner)" : ""}</td>
+                        <td className="px-3 py-3 text-slate-400">{row.email}</td>
+                        <td className="px-3 py-3">{row.plan}</td>
+                        <td className="px-3 py-3">{new Intl.NumberFormat("en-IN").format(row.tokens)}</td>
+                        <td className="px-3 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(row.status)}`}>{row.status}</span></td>
+                        <td className="px-3 py-3">
+                          <div className="flex gap-2">
+                            {row.status === "Pending" ? (
+                              <button disabled={busy} onClick={() => void runUserAction(row.id, "verify")} className="rounded-md border border-emerald-400/40 px-2 py-1 text-xs text-emerald-200 disabled:opacity-60">Verify</button>
+                            ) : row.status === "Suspended" ? (
+                              <button disabled={busy} onClick={() => void runUserAction(row.id, "reactivate")} className="rounded-md border border-cyan-400/40 px-2 py-1 text-xs text-cyan-200 disabled:opacity-60">Reactivate</button>
+                            ) : (
+                              <button disabled={busy} onClick={() => void runUserAction(row.id, "suspend")} className="rounded-md border border-rose-400/40 px-2 py-1 text-xs text-rose-200 disabled:opacity-60">Suspend</button>
+                            )}
+                            <button disabled={busy} onClick={() => void runUserAction(row.id, "reject")} className="rounded-md border border-rose-500/40 px-2 py-1 text-xs text-rose-200 disabled:opacity-60">Reject</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : tab === "services" ? (
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead className="bg-black/25 text-slate-300">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Service</th>
+                    <th className="px-3 py-2 font-medium">Provider</th>
+                    <th className="px-3 py-2 font-medium">Category</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredServices.map((row) => (
+                    <tr key={row.id} className="border-t border-white/10">
+                      <td className="px-3 py-3">{row.name}</td>
+                      <td className="px-3 py-3 text-slate-400">{row.provider}</td>
+                      <td className="px-3 py-3">{row.category}</td>
+                      <td className="px-3 py-3">
+                        <Badge variant={row.is_active ? "secondary" : "outline"}>
+                          {row.is_active ? "Active" : "Inactive"}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-3 text-slate-400">{row.updated_at ? new Date(row.updated_at).toLocaleString() : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead className="bg-black/25 text-slate-300">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Time</th>
+                    <th className="px-3 py-2 font-medium">Actor</th>
+                    <th className="px-3 py-2 font-medium">Action</th>
+                    <th className="px-3 py-2 font-medium">Target</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditRows
+                    .filter((r) => {
+                      const q = query.trim().toLowerCase();
+                      if (!q) return true;
+                      return `${r.actor_email ?? ""} ${r.action} ${r.target_email ?? r.target_user_id ?? ""} ${r.reason ?? ""}`.toLowerCase().includes(q);
+                    })
+                    .map((row) => (
+                      <tr key={row.id} className="border-t border-white/10">
+                        <td className="px-3 py-3">{new Date(row.created_at).toLocaleString()}</td>
+                        <td className="px-3 py-3 text-slate-300">{row.actor_email || "-"}</td>
+                        <td className="px-3 py-3">{row.action}</td>
+                        <td className="px-3 py-3 text-slate-400">{row.target_email || row.target_user_id || "-"}</td>
+                        <td className="px-3 py-3"><span className={`rounded-full border px-2 py-0.5 text-xs ${statusClass(row.status)}`}>{row.status}</span></td>
+                        <td className="px-3 py-3 text-slate-400">{row.reason || "-"}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
