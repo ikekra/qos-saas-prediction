@@ -47,3 +47,6 @@ verify_jwt = true
 
 [functions.admin-token-console]
 verify_jwt = true
+
+[functions.admin-token-override]
+verify_jwt = true

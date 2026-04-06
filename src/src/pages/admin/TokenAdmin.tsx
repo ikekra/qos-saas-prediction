@@ -24,6 +24,20 @@ type AdminUserRow = {
   updated_at: string | null;
 };
 
+type AdminAuditRow = {
+  id: string;
+  created_at: string;
+  actor_email: string | null;
+  action: string;
+  target_email: string | null;
+  target_user_id: string | null;
+  status: "attempt" | "success" | "failed" | "denied";
+  before_value: number | null;
+  after_value: number | null;
+  delta_value: number | null;
+  reason: string | null;
+};
+
 export default function TokenAdmin() {
   const { isAdmin } = useAuth();
   const { toast } = useToast();
@@ -34,6 +48,7 @@ export default function TokenAdmin() {
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [summary, setSummary] = useState<AdminSummary | null>(null);
   const [users, setUsers] = useState<AdminUserRow[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditRow[]>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const [mode, setMode] = useState<"set" | "add" | "deduct">("add");
   const [amount, setAmount] = useState("1000");
@@ -55,11 +70,13 @@ export default function TokenAdmin() {
         success: boolean;
         summary: AdminSummary;
         users: AdminUserRow[];
+        audit_logs: AdminAuditRow[];
       }>(functionName);
       if (error) throw error;
       if (!data?.success) throw new Error("Failed to load token admin data.");
       setSummary(data.summary);
       setUsers(data.users || []);
+      setAuditLogs(data.audit_logs || []);
       if (!selectedUserId && data.users?.length) setSelectedUserId(data.users[0].id);
     } catch (err: unknown) {
       const message = await extractFunctionErrorMessage(err, "Failed to load token admin data");
@@ -94,22 +111,32 @@ export default function TokenAdmin() {
     try {
       const { data, error } = await invokeWithLiveToken<{
         success: boolean;
-        balance_before: number;
-        balance_after: number;
-      }>("admin-token-console", {
+        results: Array<{
+          target_user_id: string;
+          balance_before: number;
+          balance_after: number;
+        }>;
+      }>("admin-token-override", {
         body: {
-          target_user_id: selectedUserId,
-          mode,
-          amount: numericAmount,
-          note,
+          confirm_override: "CONFIRM_OVERRIDE",
+          overrides: [
+            {
+              target_user_id: selectedUserId,
+              mode,
+              amount: numericAmount,
+              reason: note,
+            },
+          ],
         },
       });
       if (error) throw error;
       if (!data?.success) throw new Error("Token update failed.");
+      const row = data.results?.[0];
+      if (!row) throw new Error("Token update did not return any result.");
 
       toast({
         title: "Tokens updated",
-        description: `Balance ${data.balance_before} -> ${data.balance_after}`,
+        description: `Balance ${row.balance_before} -> ${row.balance_after}`,
       });
       await fetchData();
     } catch (err: unknown) {
@@ -148,10 +175,10 @@ export default function TokenAdmin() {
           <Card>
             <CardHeader><CardDescription>Total Token Pool</CardDescription><CardTitle>{loading ? "-" : new Intl.NumberFormat("en-IN").format(summary?.total_token_balance ?? 0)}</CardTitle></CardHeader>
           </Card>
-          <Card>
-            <CardHeader><CardDescription>Lifetime Tokens Used</CardDescription><CardTitle>{loading ? "-" : new Intl.NumberFormat("en-IN").format(summary?.total_lifetime_tokens_used ?? 0)}</CardTitle></CardHeader>
-          </Card>
-        </div>
+        <Card>
+          <CardHeader><CardDescription>Lifetime Tokens Used</CardDescription><CardTitle>{loading ? "-" : new Intl.NumberFormat("en-IN").format(summary?.total_lifetime_tokens_used ?? 0)}</CardTitle></CardHeader>
+        </Card>
+      </div>
 
         <Card>
           <CardHeader>
@@ -212,6 +239,45 @@ export default function TokenAdmin() {
             <Button onClick={applyAdjustment} disabled={saving || loading}>
               {saving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Applying...</> : "Apply Token Update"}
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Audit Trail</CardTitle>
+            <CardDescription>Every admin token action is logged before and after execution.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {auditLogs.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No audit records yet.</p>
+            ) : (
+              <div className="max-h-[380px] overflow-auto rounded-md border">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/60">
+                    <tr>
+                      <th className="p-2 text-left font-medium">Time</th>
+                      <th className="p-2 text-left font-medium">Actor</th>
+                      <th className="p-2 text-left font-medium">Target</th>
+                      <th className="p-2 text-left font-medium">Status</th>
+                      <th className="p-2 text-left font-medium">Change</th>
+                      <th className="p-2 text-left font-medium">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLogs.map((row) => (
+                      <tr key={row.id} className="border-t">
+                        <td className="p-2 whitespace-nowrap">{new Date(row.created_at).toLocaleString()}</td>
+                        <td className="p-2">{row.actor_email || "-"}</td>
+                        <td className="p-2">{row.target_email || row.target_user_id || "-"}</td>
+                        <td className="p-2 uppercase text-xs tracking-wide">{row.status}</td>
+                        <td className="p-2">{row.before_value ?? 0} {"->"} {row.after_value ?? 0}</td>
+                        <td className="p-2">{row.reason || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
