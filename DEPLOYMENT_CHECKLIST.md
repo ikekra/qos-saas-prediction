@@ -33,6 +33,11 @@ Use this as the release runbook for production rollout.
 - [ ] `ALLOWED_ORIGINS` (comma-separated; first entry used as CORS allow origin)
 - [ ] `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` (if payments enabled)
 - [ ] `RAZORPAY_WEBHOOK_SECRET` (for webhook signature validation)
+- [ ] `PAYMENT_MODE` (`test`/`sandbox` during development)
+- [ ] `TOKEN_COST_LATENCY` / `TOKEN_COST_THROUGHPUT` / `TOKEN_COST_UPTIME` / `TOKEN_COST_FULL_REPORT`
+- [ ] `TOKEN_COST_HISTORICAL_ANALYSIS` / `TOKEN_COST_ANOMALY_SCAN`
+- [ ] `LATENCY_ALERT_MS` / `UPTIME_ALERT_PERCENT` / `THROUGHPUT_DROP_ALERT`
+- [ ] `TOKEN_PRICE_SMALL(_TOKENS)` / `TOKEN_PRICE_MEDIUM(_TOKENS)` / `TOKEN_PRICE_LARGE(_TOKENS)`
 
 ## 4) Frontend Environment Variables
 - [ ] `VITE_SUPABASE_URL`
@@ -40,6 +45,8 @@ Use this as the release runbook for production rollout.
 - [ ] `VITE_ML_API_URL`
 - [ ] `VITE_PAYMENT_ENABLED`
 - [ ] `VITE_TOKEN_POLL_INTERVAL_MS`
+- [ ] `VITE_TOKEN_COST_LATENCY` / `VITE_TOKEN_COST_THROUGHPUT` / `VITE_TOKEN_COST_UPTIME` / `VITE_TOKEN_COST_FULL_REPORT`
+- [ ] `VITE_TOKEN_COST_HISTORICAL_ANALYSIS` / `VITE_TOKEN_COST_ANOMALY_SCAN`
 
 ## 5) Types, Artifacts, and Repo Hygiene
 - [ ] Regenerate Supabase types used by frontend:
