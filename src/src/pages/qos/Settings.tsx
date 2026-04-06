@@ -373,15 +373,45 @@ export default function QosSettings() {
 
   const handleStep2Next = () => {
     if (selectedPlanConfig.id === "free") {
-      setOnboardingResult({
-        paymentRef: buildPaymentReference(),
-        tokensAdded: 0,
-        planName: selectedPlanConfig.title,
-      });
-      setOnboardingStep(4);
+      void claimFreePlan();
       return;
     }
     setOnboardingStep(3);
+  };
+
+  const claimFreePlan = async () => {
+    setTopupLoading(true);
+    try {
+      const { data, error } = await invokeWithLiveToken<{
+        success?: boolean;
+        error?: string;
+        next_eligible_at?: string;
+        tokens_granted?: number;
+        new_balance?: number;
+      }>("claim-free-monthly", { body: {} });
+      if (error) throw error;
+      if (!data?.success) {
+        if (data?.error === "already_claimed") {
+          const nextDate = data?.next_eligible_at ? new Date(data.next_eligible_at).toLocaleDateString() : "next month";
+          throw new Error(`Free monthly plan already claimed. Next claim: ${nextDate}`);
+        }
+        throw new Error(data?.error || "Unable to activate free plan.");
+      }
+      if (typeof data.new_balance === "number") applyOptimisticBalance(data.new_balance);
+      await refreshTokenUsage();
+      if (userId) await loadBilling(userId);
+      setOnboardingResult({
+        paymentRef: buildPaymentReference(),
+        tokensAdded: Number(data.tokens_granted ?? 0),
+        planName: selectedPlanConfig.title,
+      });
+      setOnboardingStep(4);
+    } catch (err: unknown) {
+      const message = await extractFunctionErrorMessage(err, "Unable to activate free plan");
+      toast({ title: "Free plan activation failed", description: message, variant: "destructive" });
+    } finally {
+      setTopupLoading(false);
+    }
   };
 
   const completePaidOnboarding = async () => {
@@ -690,8 +720,8 @@ export default function QosSettings() {
                 </div>
                 <div className="flex justify-between gap-2">
                   <Button variant="outline" onClick={() => setOnboardingStep(1)}>Back</Button>
-                  <Button onClick={handleStep2Next}>
-                    {selectedPlanConfig.id === "free" ? "Activate Free Plan" : "Continue to Payment"}
+                  <Button onClick={handleStep2Next} disabled={topupLoading}>
+                    {topupLoading ? "Processing..." : selectedPlanConfig.id === "free" ? "Activate Free Plan" : "Continue to Payment"}
                   </Button>
                 </div>
               </div>

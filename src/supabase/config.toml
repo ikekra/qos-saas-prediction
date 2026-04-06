@@ -41,3 +41,9 @@ verify_jwt = true
 
 [functions.token-stream]
 verify_jwt = false
+
+[functions.claim-free-monthly]
+verify_jwt = true
+
+[functions.admin-token-console]
+verify_jwt = true

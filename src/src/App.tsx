@@ -24,6 +24,7 @@ const RecommendationsUI = lazy(() => import("./pages/qos/RecommendationsUI"));
 const QosAlerts = lazy(() => import("./pages/qos/Alerts"));
 const QosSettings = lazy(() => import("./pages/qos/Settings"));
 const WebServicesAdmin = lazy(() => import("./pages/admin/WebServicesAdmin"));
+const TokenAdmin = lazy(() => import("./pages/admin/TokenAdmin"));
 const Profile = lazy(() => import("./pages/Profile"));
 const ServicesList = lazy(() => import("./pages/services/ServicesList"));
 const NewService = lazy(() => import("./pages/services/NewService"));
@@ -71,6 +72,7 @@ const App = () => (
                   <Route path="/settings/billing" element={<ProtectedRoute><QosSettings /></ProtectedRoute>} />
                   <Route path="/profile/payments" element={<ProtectedRoute><QosSettings /></ProtectedRoute>} />
                   <Route path="/admin/web-services" element={<ProtectedRoute><WebServicesAdmin /></ProtectedRoute>} />
+                  <Route path="/admin/tokens" element={<ProtectedRoute><TokenAdmin /></ProtectedRoute>} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
                   <Route path="/services" element={<ProtectedRoute><ServicesList /></ProtectedRoute>} />
                   <Route path="/services/new" element={<ProtectedRoute><NewService /></ProtectedRoute>} />

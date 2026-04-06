@@ -52,16 +52,19 @@ export function Header() {
     const refreshUnread = () => {
       const raw = localStorage.getItem(UNREAD_ALERT_COUNT_KEY);
       const value = Number(raw ?? 0);
-      setUnreadCount(Number.isFinite(value) ? value : 0);
+      const next = Number.isFinite(value) ? value : 0;
+      setUnreadCount((prev) => (prev === next ? prev : next));
     };
 
     refreshUnread();
-    const timer = window.setInterval(refreshUnread, 15000);
+    const timer = window.setInterval(refreshUnread, 60000);
     window.addEventListener('focus', refreshUnread);
+    window.addEventListener('storage', refreshUnread);
 
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('focus', refreshUnread);
+      window.removeEventListener('storage', refreshUnread);
     };
   }, []);
 
@@ -213,7 +216,13 @@ export function Header() {
                         <DropdownMenuItem asChild>
                           <Link to="/admin/web-services" className="flex items-center gap-2">
                             <Shield className="h-4 w-4" />
-                            Admin
+                            Admin Services
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link to="/admin/tokens" className="flex items-center gap-2">
+                            <Coins className="h-4 w-4" />
+                            Admin Tokens
                           </Link>
                         </DropdownMenuItem>
                       </>
