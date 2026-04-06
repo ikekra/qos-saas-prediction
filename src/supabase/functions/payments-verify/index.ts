@@ -2,8 +2,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
-  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
+  "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 };
 
 const jsonResponse = (body: unknown, status = 200) =>
@@ -44,8 +45,8 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-  const billingMode = (Deno.env.get("BILLING_MODE") ?? "mock").toLowerCase();
-  const isMockMode = billingMode === "mock";
+  const paymentModeRaw = (Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "sandbox").toLowerCase();
+  const isMockMode = paymentModeRaw === "mock" || paymentModeRaw === "sandbox" || paymentModeRaw === "test";
   const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
