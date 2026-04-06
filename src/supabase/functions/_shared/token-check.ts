@@ -1,5 +1,6 @@
 import { createClient, type User } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonResponse } from "./cors.ts";
+import { PAYMENT_MODE, TOPUP_PACKAGES } from "./performance-policy.ts";
 
 type DeductTokensResult = {
   success: boolean;
@@ -48,7 +49,7 @@ export async function withTokenCheck(
   }
 
   const endpoint = new URL(req.url).pathname;
-  const requestId = crypto.randomUUID();
+  const requestId = req.headers.get("x-idempotency-key")?.trim() || crypto.randomUUID();
 
   const { data, error } = await supabase.rpc("deduct_tokens", {
     p_user_id: user.id,
@@ -76,6 +77,9 @@ export async function withTokenCheck(
         error: tokenResult.error ?? "Insufficient tokens",
         balance: tokenResult.balance ?? 0,
         required: tokenResult.required ?? estimatedTokens,
+        top_up_required: true,
+        payment_mode: PAYMENT_MODE,
+        suggested_topups: TOPUP_PACKAGES,
       },
       402,
     );
