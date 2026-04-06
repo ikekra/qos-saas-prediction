@@ -37,9 +37,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 export function Header() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, isAdmin } = useAuth();
   const navigate = useNavigate();
-  const isAdmin = user?.app_metadata?.role === 'admin';
   const [unreadCount, setUnreadCount] = useState(0);
   const { tokenUsage, liveStatus } = useTokenUsage();
 
