@@ -11,10 +11,8 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { PredictionForm, PredictionFormValues } from "@/components/PredictionForm";
 import { StatWidget } from "@/components/StatWidget";
 import { DashboardCard } from "@/components/DashboardCard";
-import { authFetch } from "@/lib/live-token";
-
-const ML_API_URL = (import.meta.env.VITE_ML_API_URL as string | undefined)?.trim();
-const ML_API_TIMEOUT_MS = 12000;
+import { extractFunctionErrorMessage, invokeWithLiveToken } from "@/lib/live-token";
+import { useTokenUsage } from "@/hooks/useTokenUsage";
 
 type PredictionRow = {
   id: string;
@@ -43,13 +41,27 @@ type WebService = {
   name?: string | null;
   category: string;
   provider: string;
+  base_url?: string | null;
+  docs_url?: string | null;
   avg_latency?: number | null;
   availability_score?: number | null;
   reliability_score?: number | null;
 };
 
+type PredictEdgeResponse = {
+  success: boolean;
+  summary?: string;
+  report?: {
+    tokens_remaining?: number;
+    tokens_used?: number;
+    alerts?: string[];
+  };
+  prediction?: PredictionRow;
+};
+
 export default function Predict() {
   const { toast } = useToast();
+  const { applyOptimisticBalance, refreshTokenUsage } = useTokenUsage();
   const [submitting, setSubmitting] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -96,7 +108,7 @@ export default function Predict() {
       try {
         const { data, error } = await supabase
           .from("web_services")
-          .select("id, service_name, name, category, provider, avg_latency, availability_score, reliability_score")
+          .select("id, service_name, name, category, provider, base_url, docs_url, avg_latency, availability_score, reliability_score")
           .eq("is_active", true)
           .order("service_name");
 
@@ -116,76 +128,6 @@ export default function Predict() {
     fetchServices();
   }, [toast]);
 
-  const callMlApi = async (values: PredictionFormValues) => {
-    if (!ML_API_URL) {
-      throw new Error("VITE_ML_API_URL is not configured.");
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), ML_API_TIMEOUT_MS);
-
-    try {
-      const response = await authFetch(ML_API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          latency: values.latency,
-          throughput: values.throughput,
-          availability: values.availability,
-          reliability: values.reliability,
-          response_time: values.response_time,
-        }),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const details = await response.text().catch(() => "");
-        throw new Error(details || "ML API request failed.");
-      }
-
-      const data = await response.json();
-      const predictedEfficiency = Number(data?.predicted_efficiency);
-      if (!Number.isFinite(predictedEfficiency)) {
-        throw new Error("ML API response missing predicted_efficiency.");
-      }
-
-      const localPrediction: PredictionRow = {
-        id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `local-${Date.now()}`,
-        service_id: values.service_id ?? null,
-        latency: values.latency,
-        throughput: values.throughput,
-        availability: values.availability,
-        reliability: values.reliability,
-        response_time: values.response_time,
-        predicted_efficiency: predictedEfficiency,
-        created_at: new Date().toISOString(),
-      };
-
-      return localPrediction;
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
-
-  const persistPrediction = async (predictionToSave: PredictionRow) => {
-    const { data, error } = await supabase
-      .from("qos_predictions")
-      .insert({
-        service_id: predictionToSave.service_id ?? null,
-        latency: predictionToSave.latency,
-        throughput: predictionToSave.throughput,
-        availability: predictionToSave.availability,
-        reliability: predictionToSave.reliability,
-        response_time: predictionToSave.response_time,
-        predicted_efficiency: predictionToSave.predicted_efficiency,
-      })
-      .select("id, latency, throughput, availability, reliability, response_time, predicted_efficiency, created_at")
-      .single();
-
-    if (error) throw error;
-    return data as PredictionRow;
-  };
-
   const showPrediction = (row: PredictionRow, message: string) => {
     setPrediction(row);
     setHistory((prev) => [row, ...prev].slice(0, 20));
@@ -199,25 +141,35 @@ export default function Predict() {
     setSubmitting(true);
 
     try {
-      const localPrediction = await callMlApi(values);
-      try {
-        const stored = await persistPrediction(localPrediction);
-        showPrediction(
-          stored,
-          `Predicted efficiency: ${Number(stored.predicted_efficiency).toFixed(2)}% (saved)`,
-        );
-        await fetchHistory();
-      } catch (storageError: any) {
-        showPrediction(
-          localPrediction,
-          `Predicted efficiency: ${Number(localPrediction.predicted_efficiency).toFixed(2)}% (not saved)`,
-        );
-        toast({
-          title: "Saved to history failed",
-          description: storageError.message || "Prediction was generated but not stored.",
-          variant: "destructive",
-        });
+      const selectedService = services.find((service) => service.id === values.service_id);
+      const payload = {
+        ...values,
+        service_url: selectedService?.base_url || selectedService?.docs_url || undefined,
+      };
+
+      const { data, error } = await invokeWithLiveToken<PredictEdgeResponse>("predict-qos", {
+        body: payload,
+      });
+
+      if (error) {
+        const message = await extractFunctionErrorMessage(error, "Unable to get prediction");
+        throw new Error(message);
       }
+
+      if (!data?.success || !data?.prediction) {
+        throw new Error("Prediction response was incomplete.");
+      }
+
+      if (typeof data.report?.tokens_remaining === "number") {
+        applyOptimisticBalance(data.report.tokens_remaining);
+      }
+
+      showPrediction(
+        data.prediction,
+        data.summary || `Predicted efficiency: ${Number(data.prediction.predicted_efficiency).toFixed(2)}%`,
+      );
+      await refreshTokenUsage();
+      await fetchHistory();
     } catch (error: any) {
       toast({
         title: "Prediction failed",
