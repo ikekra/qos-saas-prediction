@@ -26,11 +26,17 @@ const computePredictedEfficiency = (params: {
   return Number(clamp(score, 0, 100).toFixed(2));
 };
 
+const envCost = (key: string, fallback: number) => {
+  const raw = Deno.env.get(key);
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const BASE_COST: Record<string, number> = {
-  latency: 5,
-  load: 15,
-  uptime: 3,
-  throughput: 10,
+  latency: envCost("TOKEN_COST_LATENCY", 5),
+  load: envCost("TOKEN_COST_HISTORICAL_ANALYSIS", 25),
+  uptime: envCost("TOKEN_COST_UPTIME", 8),
+  throughput: envCost("TOKEN_COST_THROUGHPUT", 10),
 };
 
 const CACHE_TTL_SECONDS: Record<string, number> = {
