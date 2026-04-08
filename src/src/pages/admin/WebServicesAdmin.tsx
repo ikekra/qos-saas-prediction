@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -61,10 +61,11 @@ export default function WebServicesAdmin() {
   const [services, setServices] = useState<WebService[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ServiceForm>(emptyForm);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const canEdit = isAdmin;
 
-  const fetchServices = async () => {
+  const fetchServices = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
@@ -83,11 +84,40 @@ export default function WebServicesAdmin() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void fetchServices();
+    }, 300);
+  }, [fetchServices]);
 
   useEffect(() => {
-    fetchServices();
-  }, []);
+    if (!isAdmin) return;
+    void fetchServices();
+  }, [fetchServices, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const channel = supabase
+      .channel(`admin-services-live-${crypto.randomUUID()}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "web_services" }, scheduleRefresh)
+      .subscribe();
+
+    const pollTimer = window.setInterval(() => void fetchServices(), 30000);
+
+    return () => {
+      window.clearInterval(pollTimer);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [fetchServices, isAdmin, scheduleRefresh]);
 
   const selectedService = useMemo(
     () => services.find((service) => service.id === editingId) || null,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
+import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
 
 type AdminSummary = {
@@ -53,13 +54,14 @@ export default function TokenAdmin() {
   const [mode, setMode] = useState<"set" | "add" | "deduct">("add");
   const [amount, setAmount] = useState("1000");
   const [note, setNote] = useState("Manual owner adjustment");
+  const refreshTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 220);
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const qs = new URLSearchParams();
@@ -84,12 +86,42 @@ export default function TokenAdmin() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [debouncedQuery, selectedUserId, toast]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void fetchData();
+    }, 350);
+  }, [fetchData]);
 
   useEffect(() => {
     if (!isAdmin) return;
     void fetchData();
-  }, [debouncedQuery, isAdmin]);
+  }, [fetchData, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const channel = supabase
+      .channel(`admin-tokens-live-${crypto.randomUUID()}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "token_transactions" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "admin_audit_logs" }, scheduleRefresh)
+      .subscribe();
+
+    const pollTimer = window.setInterval(() => void fetchData(), 20000);
+
+    return () => {
+      window.clearInterval(pollTimer);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [fetchData, isAdmin, scheduleRefresh]);
 
   const selectedUser = useMemo(
     () => users.find((row) => row.id === selectedUserId) ?? null,

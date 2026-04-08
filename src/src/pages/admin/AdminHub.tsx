@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
+import { supabase } from "@/integrations/supabase/client";
 import { Loader2, Shield, Users, Database, ReceiptText, Coins } from "lucide-react";
 
 type AdminTab = "overview" | "users" | "services" | "audit";
@@ -79,8 +80,9 @@ export default function AdminHub() {
   const [actionLoadingId, setActionLoadingId] = useState("");
   const [query, setQuery] = useState("");
   const [payload, setPayload] = useState<AdminHubResponse | null>(null);
+  const refreshTimerRef = useRef<number | null>(null);
 
-  const fetchHub = async () => {
+  const fetchHub = useCallback(async () => {
     setLoading(true);
     try {
       const { data, error } = await invokeWithLiveToken<AdminHubResponse>("admin-user-management?limit=200");
@@ -93,12 +95,43 @@ export default function AdminHub() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      void fetchHub();
+    }, 350);
+  }, [fetchHub]);
 
   useEffect(() => {
     if (!isAdmin) return;
     void fetchHub();
-  }, [isAdmin]);
+  }, [fetchHub, isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+
+    const channel = supabase
+      .channel(`admin-hub-live-${crypto.randomUUID()}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "user_profiles" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "token_transactions" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "web_services" }, scheduleRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "admin_audit_logs" }, scheduleRefresh)
+      .subscribe();
+
+    const pollTimer = window.setInterval(() => void fetchHub(), 30000);
+
+    return () => {
+      window.clearInterval(pollTimer);
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [fetchHub, isAdmin, scheduleRefresh]);
 
   const users = payload?.users ?? [];
   const services = payload?.services ?? [];
