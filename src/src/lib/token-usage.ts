@@ -3,10 +3,30 @@ export const PAYMENT_ENABLED = String(import.meta.env.VITE_PAYMENT_ENABLED ?? "f
 
 export const BILLING_CYCLE_TOKEN_LIMIT = 5000;
 
+const normalizeLegacyTokenCost = (value: number) => {
+  switch (Math.round(value)) {
+    case 5:
+      return 50;
+    case 8:
+      return 60;
+    case 10:
+      return 70;
+    case 15:
+      return 100;
+    case 20:
+      return 120;
+    case 25:
+      return 150;
+    default:
+      return value;
+  }
+};
+
 const envCost = (key: string, fallback: number) => {
   const raw = import.meta.env[key];
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  const value = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return normalizeLegacyTokenCost(value);
 };
 
 export const OPERATION_TOKEN_COST: Record<string, number> = {
@@ -22,5 +42,5 @@ export const OPERATION_TOKEN_COST: Record<string, number> = {
 };
 
 export function getOperationCost(operationType: string) {
-  return OPERATION_TOKEN_COST[operationType] ?? 5;
+  return OPERATION_TOKEN_COST[operationType] ?? 50;
 }

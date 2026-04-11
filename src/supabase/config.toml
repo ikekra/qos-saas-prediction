@@ -3,6 +3,9 @@ project_id = "envjjulupltdixvericz"
 [functions.run-qos-test]
 verify_jwt = true
 
+[functions.get-performance-quota]
+verify_jwt = true
+
 [functions.seed-services]
 verify_jwt = false
 
@@ -52,4 +55,7 @@ verify_jwt = true
 verify_jwt = true
 
 [functions.admin-user-management]
+verify_jwt = true
+
+[functions.admin-web-services]
 verify_jwt = true

@@ -13,7 +13,27 @@ const toNumber = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
-const toInt = (value: string | undefined, fallback: number): number => Math.round(toNumber(value, fallback));
+const normalizeLegacyTokenCost = (value: number): number => {
+  switch (Math.round(value)) {
+    case 5:
+      return 50;
+    case 8:
+      return 60;
+    case 10:
+      return 70;
+    case 15:
+      return 100;
+    case 20:
+      return 120;
+    case 25:
+      return 150;
+    default:
+      return Math.round(value);
+  }
+};
+
+const toInt = (value: string | undefined, fallback: number): number =>
+  normalizeLegacyTokenCost(toNumber(value, fallback));
 
 export const TOKEN_COSTS = {
   latency: toInt(Deno.env.get("TOKEN_COST_LATENCY"), 5),

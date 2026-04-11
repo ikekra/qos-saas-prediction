@@ -20,6 +20,19 @@ import { TokenWidget } from '@/components/TokenWidget';
 
 type TestType = 'latency' | 'load' | 'uptime' | 'throughput';
 
+type QuotaState = {
+  plan: 'standard' | 'pro' | 'enterprise';
+  runLimit: number;
+  runsUsed: number;
+  runsRemaining: number;
+  resetDate: string;
+  warning?: string | null;
+  exhaustedMessage?: string | null;
+  ctaLabel?: string | null;
+  orgId?: string | null;
+  summary?: string | null;
+};
+
 type RunResult = {
   data?: {
     id: string;
@@ -52,6 +65,7 @@ type RunResult = {
     ttlSeconds: number;
     cachedAt?: string;
   };
+  quota?: QuotaState;
 };
 
 const TEST_TYPES: Array<{ value: TestType; label: string; cost: number }> = [
@@ -86,9 +100,33 @@ export default function RunTest() {
   const [serviceOptions, setServiceOptions] = useState<Array<{ id: string; name: string; url: string }>>([]);
   const [selectedService, setSelectedService] = useState<string>('manual');
   const [runAllLoading, setRunAllLoading] = useState(false);
+  const [quota, setQuota] = useState<QuotaState | null>(null);
 
   const selectedCost = useMemo(() => getOperationCost(testType), [testType]);
   const estimatedAfter = useMemo(() => Math.max(0, tokenUsage.balance - selectedCost), [selectedCost, tokenUsage.balance]);
+
+  const loadQuota = async () => {
+    const { data, error } = await invokeWithLiveToken<{ quota?: QuotaState; error?: string }>('get-performance-quota');
+    if (error) return;
+    if (data?.quota) setQuota(data.quota);
+  };
+
+  const applyQuotaState = (nextQuota?: QuotaState | null) => {
+    if (!nextQuota) return;
+    setQuota(nextQuota);
+  };
+
+  const parseQuotaError = async (error: unknown) => {
+    const maybeError = error as { context?: { json?: () => Promise<unknown> } };
+    if (!maybeError?.context || typeof maybeError.context.json !== 'function') return null;
+
+    try {
+      const payload = (await maybeError.context.json()) as { error?: string; quota?: QuotaState };
+      return payload;
+    } catch {
+      return null;
+    }
+  };
 
   const loadRecent = async () => {
     const { data } = await supabase
@@ -101,6 +139,7 @@ export default function RunTest() {
 
   useEffect(() => {
     void loadRecent();
+    void loadQuota();
   }, []);
 
   useEffect(() => {
@@ -138,6 +177,11 @@ export default function RunTest() {
       return;
     }
 
+    if (quota?.runsRemaining === 0 && quota.exhaustedMessage) {
+      toast({ title: 'Run limit reached', description: quota.exhaustedMessage, variant: 'destructive' });
+      return;
+    }
+
     if (tokenUsage.balance < selectedCost && !activeForceFresh) {
       toast({
         title: 'Insufficient tokens',
@@ -167,6 +211,7 @@ export default function RunTest() {
 
       setStatusText('Completed');
       setLastResult(data ?? null);
+      applyQuotaState(data?.quota);
       if (compareEnabled && !baselineResult && data) setBaselineResult(data);
 
       if (typeof data?.token?.balance === 'number') {
@@ -191,20 +236,32 @@ export default function RunTest() {
         toast({
           title: 'Test completed',
           description:
-            refunded > 0
+            data?.quota?.summary ??
+            (refunded > 0
               ? `${deducted} tokens deducted, ${refunded} refunded.`
-              : `${deducted} tokens deducted.`,
+              : `${deducted} tokens deducted.`),
+        });
+      }
+
+      if (data?.quota?.warning) {
+        toast({
+          title: 'Quota update',
+          description: data.quota.warning,
         });
       }
 
       await refreshTokenUsage();
       await loadRecent();
+      await loadQuota();
     } catch (error) {
       setStatusText('Failed');
       if (shouldOptimisticDeduct) refundTokens(selectedCost);
-      const message = await extractFunctionErrorMessage(error, 'Failed to run test');
+      const quotaError = await parseQuotaError(error);
+      if (quotaError?.quota) applyQuotaState(quotaError.quota);
+      const message = quotaError?.error || await extractFunctionErrorMessage(error, 'Failed to run test');
       toast({ title: 'Run failed', description: message, variant: 'destructive' });
       await refreshTokenUsage();
+      await loadQuota();
     } finally {
       setLoading(false);
     }
@@ -232,6 +289,34 @@ export default function RunTest() {
               <CardDescription>Choose endpoint, type, and cost mode</CardDescription>
             </CardHeader>
             <CardContent className="space-y-5">
+              {quota && (
+                <div className={`rounded-lg border p-3 text-sm ${quota.runsRemaining === 0 ? 'border-rose-300 bg-rose-50' : 'border-border'}`}>
+                  <p className="font-medium capitalize">{quota.plan} plan run quota</p>
+                  <p>{quota.runsUsed} / {quota.runLimit} runs used</p>
+                  <p>{quota.runsRemaining} runs remaining until {new Date(quota.resetDate).toLocaleDateString()}</p>
+                  {quota.orgId && <p className="text-xs text-muted-foreground mt-1">Org scope: {quota.orgId}</p>}
+                  {quota.warning && <p className="mt-2 text-amber-700">{quota.warning}</p>}
+                  {quota.exhaustedMessage && <p className="mt-2 text-rose-700">{quota.exhaustedMessage}</p>}
+                  {quota.ctaLabel && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="mt-3"
+                      variant={quota.plan === 'standard' ? 'default' : 'outline'}
+                      onClick={() => {
+                        if (quota.plan === 'standard') {
+                          window.location.href = '/settings/billing';
+                          return;
+                        }
+                        window.location.href = 'mailto:sales@qoscollab.com?subject=Enterprise%20Run%20Quota';
+                      }}
+                    >
+                      {quota.ctaLabel}
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label htmlFor="serviceUrl">Endpoint URL</Label>
                 <Select
@@ -296,7 +381,7 @@ export default function RunTest() {
                 <Switch checked={forceFresh} onCheckedChange={setForceFresh} />
               </div>
 
-              <Button className="w-full" disabled={loading} onClick={() => void runTest()}>
+              <Button className="w-full" disabled={loading || quota?.runsRemaining === 0} onClick={() => void runTest()}>
                 {loading ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -313,7 +398,7 @@ export default function RunTest() {
               <Button
                 className="w-full"
                 variant="secondary"
-                disabled={runAllLoading || serviceOptions.length === 0}
+                disabled={runAllLoading || serviceOptions.length === 0 || quota?.runsRemaining === 0}
                 onClick={async () => {
                   setRunAllLoading(true);
                   try {
@@ -331,8 +416,14 @@ export default function RunTest() {
                       });
                       if (error) {
                         failed += 1;
+                        const quotaError = await parseQuotaError(error);
+                        if (quotaError?.quota) {
+                          applyQuotaState(quotaError.quota);
+                          if (quotaError.quota.runsRemaining === 0) break;
+                        }
                       } else {
                         success += 1;
+                        applyQuotaState(data?.quota);
                         if (typeof data?.token?.balance === 'number') {
                           applyOptimisticBalance(data.token.balance);
                         }
@@ -340,6 +431,7 @@ export default function RunTest() {
                     }
                     await refreshTokenUsage();
                     await loadRecent();
+                    await loadQuota();
                     toast({
                       title: 'Run-all finished',
                       description: `Success: ${success}, Failed: ${failed}`,
@@ -418,6 +510,8 @@ export default function RunTest() {
                   <p className="text-xs text-muted-foreground">
                     Tokens: reserved {lastResult.token?.reserved ?? 0}, deducted {lastResult.token?.deducted ?? 0}, refunded {lastResult.token?.refunded ?? 0}
                   </p>
+                  {lastResult.quota?.summary && <p className="text-xs text-muted-foreground">{lastResult.quota.summary}</p>}
+                  {lastResult.quota?.warning && <p className="text-xs text-amber-700">{lastResult.quota.warning}</p>}
                   <p className="text-xs text-muted-foreground">Run status: {statusText}</p>
                   {lastResult.data?.error_message && <p className="text-xs text-amber-600">Error note: {lastResult.data.error_message}</p>}
 

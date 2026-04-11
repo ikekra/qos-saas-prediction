@@ -1,5 +1,6 @@
 ﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { getPerformanceQuotaState, logPerformanceRun, reservePerformanceRun } from "../_shared/performance-run-quota.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': (Deno.env.get('ALLOWED_ORIGINS') ?? 'http://localhost:5173').split(',')[0].trim(),
@@ -29,7 +30,23 @@ const computePredictedEfficiency = (params: {
 const envCost = (key: string, fallback: number) => {
   const raw = Deno.env.get(key);
   const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  const value = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  switch (Math.round(value)) {
+    case 5:
+      return 50;
+    case 8:
+      return 60;
+    case 10:
+      return 70;
+    case 15:
+      return 100;
+    case 20:
+      return 120;
+    case 25:
+      return 150;
+    default:
+      return value;
+  }
 };
 
 const BASE_COST: Record<string, number> = {
@@ -118,9 +135,11 @@ serve(async (req) => {
     const cacheTtlSeconds = CACHE_TTL_SECONDS[testType] ?? 60;
     const cacheThreshold = new Date(Date.now() - cacheTtlSeconds * 1000).toISOString();
 
+    const quotaPreview = await getPerformanceQuotaState(adminClient as any, user);
+
     const profileSelect = await adminClient
       .from('user_profiles')
-      .select('token_balance, lifetime_tokens_used, email')
+      .select('token_balance, lifetime_tokens_used')
       .eq('id', user.id)
       .limit(1);
 
@@ -128,30 +147,10 @@ serve(async (req) => {
       throw new Error(`Failed to load user profile: ${profileSelect.error.message}`);
     }
 
-    let profile = profileSelect.data?.[0] ?? null;
-    if (!profile) {
-      const profileCreate = await adminClient
-        .from('user_profiles')
-        .upsert(
-          {
-            id: user.id,
-            email: user.email ?? `${user.id}@local.user`,
-            token_balance: 0,
-            lifetime_tokens_used: 0,
-          },
-          { onConflict: 'id' },
-        )
-        .select('token_balance, lifetime_tokens_used, email')
-        .limit(1);
-
-      if (profileCreate.error) {
-        throw new Error(`Failed to initialize profile: ${profileCreate.error.message}`);
-      }
-      profile = profileCreate.data?.[0] ?? null;
-      if (!profile) {
-        throw new Error('Profile initialization returned empty result');
-      }
-    }
+    const profile = profileSelect.data?.[0] ?? {
+      token_balance: 0,
+      lifetime_tokens_used: 0,
+    };
 
     const cachedLookup = await adminClient
       .from('tests')
@@ -194,6 +193,17 @@ serve(async (req) => {
             ttlSeconds: cacheTtlSeconds,
             cachedAt: cachedTest.created_at,
           },
+          quota: {
+            plan: quotaPreview.plan,
+            runLimit: quotaPreview.runLimit,
+            runsUsed: quotaPreview.runsUsed,
+            runsRemaining: quotaPreview.runsRemaining,
+            resetDate: quotaPreview.resetDate,
+            warning: quotaPreview.warning,
+            exhaustedMessage: quotaPreview.exhaustedMessage,
+            ctaLabel: quotaPreview.ctaLabel,
+            orgId: quotaPreview.orgId,
+          },
         }),
         {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -214,6 +224,28 @@ serve(async (req) => {
       );
     }
 
+    const quota = await reservePerformanceRun(adminClient as any, user);
+
+    if (quota.exhaustedMessage) {
+      return new Response(
+        JSON.stringify({
+          error: quota.exhaustedMessage,
+          quota: {
+            plan: quota.plan,
+            runLimit: quota.runLimit,
+            runsUsed: quota.runsUsed,
+            runsRemaining: quota.runsRemaining,
+            resetDate: quota.resetDate,
+            warning: quota.warning,
+            exhaustedMessage: quota.exhaustedMessage,
+            ctaLabel: quota.ctaLabel,
+            orgId: quota.orgId,
+          },
+        }),
+        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     const reserveUpdate = await adminClient
       .from('user_profiles')
       .update({ token_balance: round2(currentBalance - estimatedTokens) })
@@ -223,6 +255,10 @@ serve(async (req) => {
       .limit(1);
 
     if (reserveUpdate.error) {
+      await adminClient.rpc('release_performance_test_run', {
+        p_scope_type: quota.scopeType,
+        p_scope_id: quota.scopeId,
+      });
       return new Response(
         JSON.stringify({
           error: 'Failed to reserve tokens',
@@ -446,6 +482,17 @@ serve(async (req) => {
       }
     }
 
+    await logPerformanceRun(adminClient as any, quota, {
+      testType,
+      durationMs: elapsedMs,
+      status: runStatus,
+      latency: testResults.latency,
+      uptime: testResults.uptime,
+      throughput: testResults.throughput,
+      successRate: testResults.success_rate,
+      errorMessage: runErrorMessage,
+    });
+
     console.log('Test completed successfully:', testRecord);
 
     return new Response(
@@ -464,6 +511,18 @@ serve(async (req) => {
         cache: {
           hit: false,
           ttlSeconds: cacheTtlSeconds,
+        },
+        quota: {
+          plan: quota.plan,
+          runLimit: quota.runLimit,
+          runsUsed: quota.runsUsed,
+          runsRemaining: quota.runsRemaining,
+          resetDate: quota.resetDate,
+          warning: quota.warning,
+          exhaustedMessage: quota.exhaustedMessage,
+          ctaLabel: quota.ctaLabel,
+          orgId: quota.orgId,
+          summary: `Run ${quota.runNumber} of ${quota.runLimit} used. ${quota.runsRemaining} runs remaining this cycle.`,
         },
       }),
       {
