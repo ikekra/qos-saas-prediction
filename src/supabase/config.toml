@@ -59,3 +59,9 @@ verify_jwt = true
 
 [functions.admin-web-services]
 verify_jwt = true
+
+[functions.team-api]
+verify_jwt = false
+
+[functions.admin-control-plane]
+verify_jwt = true

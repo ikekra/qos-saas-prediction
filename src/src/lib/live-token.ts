@@ -37,6 +37,16 @@ export async function authFetch(input: RequestInfo | URL, init: RequestInit = {}
   return fetch(input, { ...init, headers });
 }
 
+export function buildFunctionUrl(functionName: string, path = "") {
+  const base = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${functionName}`.replace(/\/+$/, "");
+  const suffix = path ? `/${path.replace(/^\/+/, "")}` : "";
+  return `${base}${suffix}`;
+}
+
+export async function authFunctionFetch(functionName: string, path = "", init: RequestInit = {}) {
+  return authFetch(buildFunctionUrl(functionName, path), init);
+}
+
 export async function extractFunctionErrorMessage(error: unknown, fallback: string) {
   const maybeError = error as {
     message?: string;

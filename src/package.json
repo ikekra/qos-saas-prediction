@@ -9,6 +9,7 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint . --max-warnings=0",
     "check": "npm run lint && npm run build",
+    "test:team": "node --experimental-strip-types --test tests/team-rules.test.mjs",
     "preview": "vite preview",
     "sync:publicapis": "node scripts/sync_publicapis.mjs"
   },

@@ -23,7 +23,7 @@ type ReservedRunRow = {
   success: boolean;
   blocked: boolean;
   plan: PerformancePlan;
-  scope_type: "user" | "org";
+  scope_type: "user" | "org" | "team";
   scope_id: string;
   run_limit: number;
   runs_used: number;
@@ -39,8 +39,9 @@ type ReservedRunRow = {
 export type PerformanceQuotaState = {
   userId: string;
   orgId: string | null;
+  teamId: string | null;
   plan: PerformancePlan;
-  scopeType: "user" | "org";
+  scopeType: "user" | "org" | "team";
   scopeId: string;
   runLimit: number;
   runsUsed: number;
@@ -53,6 +54,7 @@ export type PerformanceQuotaState = {
   ctaLabel: string | null;
   softAlertNeeded: boolean;
   hardAlertNeeded: boolean;
+  teamRole: "owner" | "admin" | "member" | null;
 };
 
 const PLAN_LIMITS: Record<PerformancePlan, number> = {
@@ -212,6 +214,59 @@ function resolveQuotaConfig(user: User, profile: ProfileRow) {
 
 export async function getPerformanceQuotaState(adminClient: AdminClient, user: User): Promise<PerformanceQuotaState> {
   const profile = await ensureUserProfile(adminClient, user);
+  const teamMembership = await adminClient
+    .from("team_members")
+    .select("team_id, role, status, teams!inner(id, plan, max_members, deleted_at)")
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .is("teams.deleted_at", null)
+    .maybeSingle();
+
+  if (!teamMembership.error && teamMembership.data?.team_id) {
+    const teamPlan = normalizePlan((teamMembership.data.teams as { plan?: string | null })?.plan);
+    const runLimit = teamPlan === "enterprise" ? 950 : 500;
+    const quotaCycle = await adminClient.rpc("ensure_team_quota_cycle", {
+      p_team_id: teamMembership.data.team_id,
+      p_run_limit: runLimit,
+    });
+
+    if (quotaCycle.error) {
+      throw new Error(`Failed to load team quota: ${quotaCycle.error.message}`);
+    }
+
+    const quotaRow = Array.isArray(quotaCycle.data)
+      ? (quotaCycle.data[0] as Record<string, unknown> | undefined)
+      : (quotaCycle.data as Record<string, unknown> | undefined);
+
+    const runsUsed = Number(quotaRow?.runs_used ?? 0);
+    const runsRemaining = Math.max(0, runLimit - runsUsed);
+    const resetDate = String(quotaRow?.reset_at ?? buildNextResetDate(null));
+
+    return {
+      userId: user.id,
+      orgId: null,
+      teamId: String(teamMembership.data.team_id),
+      plan: teamPlan,
+      scopeType: "team",
+      scopeId: String(teamMembership.data.team_id),
+      runLimit,
+      runsUsed,
+      runsRemaining,
+      runNumber: runsUsed,
+      resetDate,
+      accountManagerWebhook: null,
+      warning: runsRemaining > 0 && runsRemaining <= 25 ? `Your team has ${runsRemaining} shared test runs left this cycle.` : null,
+      exhaustedMessage:
+        runsRemaining === 0
+          ? `Your team has used all ${runLimit} shared performance test runs. The quota resets on ${new Date(resetDate).toLocaleDateString("en-IN")}.`
+          : null,
+      ctaLabel: teamPlan === "pro" ? "Upgrade to Enterprise" : null,
+      softAlertNeeded: false,
+      hardAlertNeeded: false,
+      teamRole: (teamMembership.data.role as "owner" | "admin" | "member") ?? null,
+    };
+  }
+
   const config = resolveQuotaConfig(user, profile);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -270,6 +325,7 @@ export async function getPerformanceQuotaState(adminClient: AdminClient, user: U
   return {
     userId: user.id,
     orgId: config.orgId,
+    teamId: null,
     plan: config.plan,
     scopeType: config.scopeType,
     scopeId: config.scopeId,
@@ -290,6 +346,7 @@ export async function getPerformanceQuotaState(adminClient: AdminClient, user: U
       config.plan === "enterprise" &&
       runsUsed >= config.runLimit &&
       !cycle?.hard_limit_alerted_at,
+    teamRole: null,
   };
 }
 
@@ -312,6 +369,63 @@ async function sendQuotaAlert(baseUrl: string, path: string, payload: Record<str
 
 export async function reservePerformanceRun(adminClient: AdminClient, user: User): Promise<PerformanceQuotaState> {
   const profile = await ensureUserProfile(adminClient, user);
+  const teamMembership = await adminClient
+    .from("team_members")
+    .select("team_id, role, teams!inner(id, plan, deleted_at)")
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .is("teams.deleted_at", null)
+    .maybeSingle();
+
+  if (!teamMembership.error && teamMembership.data?.team_id) {
+    const teamPlan = normalizePlan((teamMembership.data.teams as { plan?: string | null })?.plan);
+    const reservation = await adminClient.rpc("reserve_team_quota_run", {
+      p_team_id: teamMembership.data.team_id,
+      p_run_limit: teamPlan === "enterprise" ? 950 : 500,
+    });
+
+    if (reservation.error) {
+      throw new Error(`Failed to reserve team quota run: ${reservation.error.message}`);
+    }
+
+    const row = Array.isArray(reservation.data)
+      ? (reservation.data[0] as Record<string, unknown> | undefined)
+      : (reservation.data as Record<string, unknown> | undefined);
+
+    if (!row) {
+      throw new Error("Team quota reservation returned no data");
+    }
+
+    const runLimit = Number(row.run_limit ?? (teamPlan === "enterprise" ? 950 : 500));
+    const runsUsed = Number(row.runs_used ?? 0);
+    const runsRemaining = Math.max(0, Number(row.runs_remaining ?? 0));
+    const resetDate = String(row.reset_at ?? buildNextResetDate(null));
+
+    return {
+      userId: user.id,
+      orgId: null,
+      teamId: String(teamMembership.data.team_id),
+      plan: teamPlan,
+      scopeType: "team",
+      scopeId: String(teamMembership.data.team_id),
+      runLimit,
+      runsUsed,
+      runsRemaining,
+      runNumber: runsUsed,
+      resetDate,
+      accountManagerWebhook: null,
+      warning: runsRemaining > 0 && runsRemaining <= 25 ? `Your team has ${runsRemaining} shared test runs left this cycle.` : null,
+      exhaustedMessage:
+        row.success === false
+          ? `Your team has used all ${runLimit} shared performance test runs. The quota resets on ${new Date(resetDate).toLocaleDateString("en-IN")}.`
+          : null,
+      ctaLabel: teamPlan === "pro" && row.success === false ? "Upgrade to Enterprise" : null,
+      softAlertNeeded: false,
+      hardAlertNeeded: false,
+      teamRole: (teamMembership.data.role as "owner" | "admin" | "member") ?? null,
+    };
+  }
+
   const config = resolveQuotaConfig(user, profile);
 
   const reservation = await adminClient.rpc("reserve_performance_test_run", {
@@ -338,6 +452,7 @@ export async function reservePerformanceRun(adminClient: AdminClient, user: User
   const state: PerformanceQuotaState = {
     userId: user.id,
     orgId: config.orgId,
+    teamId: null,
     plan: row.plan,
     scopeType: row.scope_type,
     scopeId: row.scope_id,
@@ -354,6 +469,7 @@ export async function reservePerformanceRun(adminClient: AdminClient, user: User
     ctaLabel: row.blocked ? buildCtaLabel(row.plan) : null,
     softAlertNeeded: Boolean(row.soft_alert_needed),
     hardAlertNeeded: Boolean(row.hard_alert_needed),
+    teamRole: null,
   };
 
   const alertPayload = {
@@ -416,7 +532,9 @@ export async function logPerformanceRun(
 
   const insert = await adminClient.from("performance_test_run_logs").insert({
     org_id: quota.orgId,
+    team_id: quota.teamId,
     user_id: quota.userId,
+    actor_user_id: quota.userId,
     plan: quota.plan,
     run_number: quota.runNumber,
     test_type: params.testType,

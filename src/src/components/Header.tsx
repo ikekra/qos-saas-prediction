@@ -98,6 +98,11 @@ export function Header() {
                   Compare
                 </Button>
               </Link>
+              <Link to="/team">
+                <Button variant="ghost" size="sm">
+                  Team
+                </Button>
+              </Link>
               {isAdmin && (
                 <>
                   <Link to="/admin/dashboard">
@@ -206,6 +211,12 @@ export function Header() {
                       <Link to="/qos/alerts" className="flex items-center gap-2">
                         <Bell className="h-4 w-4" />
                         Alerts
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link to="/team" className="flex items-center gap-2">
+                        <User className="h-4 w-4" />
+                        Team Workspace
                       </Link>
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>

@@ -27,6 +27,11 @@ const QosSettings = lazy(() => import("./pages/qos/Settings"));
 const WebServicesAdmin = lazy(() => import("./pages/admin/WebServicesAdmin"));
 const TokenAdmin = lazy(() => import("./pages/admin/TokenAdmin"));
 const AdminHub = lazy(() => import("./pages/admin/AdminHub"));
+const AdminUsers = lazy(() => import("./pages/admin/AdminUsers"));
+const AdminPayments = lazy(() => import("./pages/admin/AdminPayments"));
+const AdminAuditLogs = lazy(() => import("./pages/admin/AdminAuditLogs"));
+const TeamDashboard = lazy(() => import("./pages/team/TeamDashboard"));
+const TeamInvitationPage = lazy(() => import("./pages/team/TeamInvitation"));
 const Profile = lazy(() => import("./pages/Profile"));
 const ServicesList = lazy(() => import("./pages/services/ServicesList"));
 const NewService = lazy(() => import("./pages/services/NewService"));
@@ -77,7 +82,12 @@ const App = () => (
                   <Route path="/admin/tokens" element={<ProtectedRoute requireAdmin><TokenAdmin /></ProtectedRoute>} />
                   <Route path="/admin" element={<ProtectedRoute requireAdmin><AdminHub /></ProtectedRoute>} />
                   <Route path="/admin/dashboard" element={<ProtectedRoute requireAdmin><AdminHub /></ProtectedRoute>} />
+                  <Route path="/admin/users" element={<ProtectedRoute requireAdmin><AdminUsers /></ProtectedRoute>} />
+                  <Route path="/admin/payments" element={<ProtectedRoute requireAdmin><AdminPayments /></ProtectedRoute>} />
+                  <Route path="/admin/audit" element={<ProtectedRoute requireAdmin><AdminAuditLogs /></ProtectedRoute>} />
                   <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+                  <Route path="/team" element={<ProtectedRoute><TeamDashboard /></ProtectedRoute>} />
+                  <Route path="/team/invitations/:token" element={<TeamInvitationPage />} />
                   <Route path="/services" element={<ProtectedRoute><ServicesList /></ProtectedRoute>} />
                   <Route path="/services/new" element={<ProtectedRoute><NewService /></ProtectedRoute>} />
                   <Route path="/services/:id" element={<ProtectedRoute><ServiceDetail /></ProtectedRoute>} />
