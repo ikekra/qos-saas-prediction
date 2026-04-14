@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
 import { Loader2, Plus, Save } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -68,17 +69,15 @@ export default function WebServicesAdmin() {
   const fetchServices = useCallback(async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("web_services")
-        .select("id, name, category, logo_url, provider, description, base_latency_estimate, availability_score, is_active, tags, created_at")
-        .order("created_at", { ascending: false });
-
+      const { data, error } = await invokeWithLiveToken<{ success: boolean; services: WebService[] }>("admin-web-services");
       if (error) throw error;
-      setServices((data || []) as WebService[]);
-    } catch (error: any) {
+      if (!data?.success) throw new Error("Failed to load services.");
+      setServices(data.services || []);
+    } catch (error: unknown) {
+      const message = await extractFunctionErrorMessage(error, "Please try again.");
       toast({
         title: "Failed to load services",
-        description: error.message || "Please try again.",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -164,7 +163,18 @@ export default function WebServicesAdmin() {
 
     setSaving(true);
     try {
-      const payload = {
+      const payload: {
+        id?: string;
+        name: string;
+        category: string;
+        logo_url: string | null;
+        provider: string;
+        description: string;
+        base_latency_estimate: number;
+        availability_score: number;
+        is_active: boolean;
+        tags: string[];
+      } = {
         name: form.name.trim(),
         category: form.category,
         logo_url: form.logo_url?.trim() || null,
@@ -180,27 +190,30 @@ export default function WebServicesAdmin() {
       };
 
       if (editingId) {
-        const { error } = await supabase
-          .from("web_services")
-          .update(payload)
-          .eq("id", editingId);
+        payload.id = editingId;
+        const { data, error } = await invokeWithLiveToken<{ success: boolean }>("admin-web-services", {
+          body: payload,
+        });
         if (error) throw error;
+        if (!data?.success) throw new Error("Service update failed.");
         toast({ title: "Service updated" });
       } else {
-        const { error } = await supabase
-          .from("web_services")
-          .insert(payload);
+        const { data, error } = await invokeWithLiveToken<{ success: boolean }>("admin-web-services", {
+          body: payload,
+        });
         if (error) throw error;
+        if (!data?.success) throw new Error("Service create failed.");
         toast({ title: "Service created" });
       }
 
       setEditingId(null);
       setForm(emptyForm);
       await fetchServices();
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = await extractFunctionErrorMessage(error, "Unable to save changes.");
       toast({
         title: "Save failed",
-        description: error.message || "Unable to save changes.",
+        description: message,
         variant: "destructive",
       });
     } finally {
