@@ -48,40 +48,6 @@ type TopUpRecord = {
 
 type PackName = 'starter' | 'growth' | 'pro';
 
-type RazorpaySuccessResponse = {
-  razorpay_order_id: string;
-  razorpay_payment_id: string;
-  razorpay_signature: string;
-};
-
-type RazorpayOptions = {
-  key: string;
-  amount: number;
-  currency: string;
-  name: string;
-  description: string;
-  order_id: string;
-  handler: (response: RazorpaySuccessResponse) => Promise<void>;
-  prefill?: {
-    email?: string;
-  };
-  theme?: {
-    color: string;
-  };
-};
-
-type RazorpayInstance = {
-  open: () => void;
-};
-
-type RazorpayConstructor = new (options: RazorpayOptions) => RazorpayInstance;
-
-declare global {
-  interface Window {
-    Razorpay?: RazorpayConstructor;
-  }
-}
-
 export default function Profile() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -349,18 +315,6 @@ export default function Profile() {
       (paise || 0) / 100,
     );
 
-  const loadRazorpayScript = async () => {
-    if (window.Razorpay) return true;
-    return await new Promise<boolean>((resolve) => {
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.async = true;
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
   const withTimeout = async <T,>(promise: Promise<T>, timeoutMs = 10000): Promise<T> => {
     let timer: number | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -390,86 +344,16 @@ export default function Profile() {
         throw new Error((orderData as { error?: string }).error);
       }
 
-      if (orderData?.isMockAutoVerified) {
-        if (typeof orderData?.newBalance === 'number') {
-          applyOptimisticBalance(orderData.newBalance);
-        }
-        toast({
-          title: 'Mock top-up successful',
-          description: `Tokens credited. New balance: ${orderData?.newBalance ?? 'updated'}`,
-        });
-        await fetchSubscriptionData();
-        await refreshTokenUsage();
-        return;
+      if (typeof orderData?.newBalance === 'number') {
+        applyOptimisticBalance(orderData.newBalance);
       }
 
-      if (orderData?.isMock) {
-        const { error: verifyError } = await withTimeout(
-          invokeWithLiveToken('payments-verify', {
-            body: {
-              razorpay_order_id: orderData.orderId,
-              razorpay_payment_id: `mock_payment_${crypto.randomUUID()}`,
-              razorpay_signature: 'mock_signature',
-            },
-          }),
-        );
-        if (verifyError) throw verifyError;
-        if (typeof (orderData as { newBalance?: number } | null)?.newBalance === 'number') {
-          applyOptimisticBalance((orderData as { newBalance: number }).newBalance);
-        }
-
-        toast({
-          title: 'Demo top-up successful',
-          description: 'Tokens credited instantly in demo billing mode.',
-        });
-        await fetchSubscriptionData();
-        await refreshTokenUsage();
-        return;
-      }
-
-      const razorpayReady = await loadRazorpayScript();
-      if (!razorpayReady || !window.Razorpay) {
-        toast({
-          title: 'Demo checkout unavailable',
-          description: 'Could not load the demo checkout flow. Please try again.',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      const razorpay = new window.Razorpay({
-        key: orderData.key,
-        amount: orderData.amount,
-        currency: orderData.currency,
-        name: 'QoSCollab',
-        description: `${pack.toUpperCase()} token top-up`,
-        order_id: orderData.orderId,
-        prefill: { email: user.email ?? undefined },
-        theme: { color: '#0ea5e9' },
-        handler: async (response: RazorpaySuccessResponse) => {
-          const { data: verifyData, error: verifyError } = await withTimeout(
-            invokeWithLiveToken('payments-verify', {
-              body: response,
-            }),
-          );
-          if (verifyError) throw verifyError;
-          if ((verifyData as { error?: string } | null)?.error) {
-            throw new Error((verifyData as { error?: string }).error);
-          }
-          if (typeof (verifyData as { newBalance?: number } | null)?.newBalance === 'number') {
-            applyOptimisticBalance((verifyData as { newBalance: number }).newBalance);
-          }
-
-          toast({
-            title: 'Top-up successful',
-            description: 'Demo payment verified and tokens credited.',
-          });
-          await fetchSubscriptionData();
-          await refreshTokenUsage();
-        },
+      toast({
+        title: 'Demo top-up successful',
+        description: `Tokens credited instantly. New balance: ${orderData?.newBalance ?? 'updated'}`,
       });
-
-      razorpay.open();
+      await fetchSubscriptionData();
+      await refreshTokenUsage();
     } catch (error: any) {
       const message = await extractFunctionErrorMessage(error, 'Could not start token top-up.');
       if (error?.message?.includes('Authentication')) {
