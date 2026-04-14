@@ -714,14 +714,14 @@ export default function QosSettings() {
                 <div className="rounded-lg border bg-muted/40 p-3 text-sm">
                   <p className="font-medium">Selected: {selectedPlanConfig.title}</p>
                   <p>
-                    {selectedPlanConfig.amountInrMonthly === 0 ? "No tokens required" : `Demo billing: Rs ${selectedPlanConfig.amountInrMonthly}/month`}
+                    {selectedPlanConfig.amountInrMonthly === 0 ? "No payment required" : `Pay Rs ${selectedPlanConfig.amountInrMonthly}/month`}
                   </p>
                   <p>Tokens: {new Intl.NumberFormat("en-IN").format(selectedPlanConfig.tokens)}</p>
                 </div>
                 <div className="flex justify-between gap-2">
                   <Button variant="outline" onClick={() => setOnboardingStep(1)}>Back</Button>
                   <Button onClick={handleStep2Next} disabled={topupLoading}>
-                    {topupLoading ? "Processing..." : selectedPlanConfig.id === "free" ? "Activate Free Plan" : "Continue to Demo Top-up"}
+                    {topupLoading ? "Processing..." : selectedPlanConfig.id === "free" ? "Activate Free Plan" : "Continue to Payment"}
                   </Button>
                 </div>
               </div>
@@ -729,12 +729,12 @@ export default function QosSettings() {
 
             {onboardingStep === 3 && (
               <div className="space-y-4">
-                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-                    Demo billing mode: no real charges will be applied.
-                  </div>
+                <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  Sandbox/Test Mode: No real charges will be applied.
+                </div>
                 <div className="grid md:grid-cols-2 gap-3">
                   <div className="md:col-span-2">
-                    <Label>Demo account name *</Label>
+                    <Label>Card holder name *</Label>
                     <Input
                       value={paymentForm.cardName}
                       onChange={(e) => setPaymentForm((prev) => ({ ...prev, cardName: e.target.value }))}
@@ -742,16 +742,16 @@ export default function QosSettings() {
                     {paymentErrors.cardName && <p className="text-xs text-destructive mt-1">{paymentErrors.cardName}</p>}
                   </div>
                   <div className="md:col-span-2">
-                    <Label>Demo reference number *</Label>
+                    <Label>Card number *</Label>
                     <Input
                       value={paymentForm.cardNumber}
                       onChange={(e) => setPaymentForm((prev) => ({ ...prev, cardNumber: toCardNumber(e.target.value) }))}
-                      placeholder="DEMO 4242 4242 4242"
+                      placeholder="4242 4242 4242 4242"
                     />
                     {paymentErrors.cardNumber && <p className="text-xs text-destructive mt-1">{paymentErrors.cardNumber}</p>}
                   </div>
                   <div>
-                    <Label>Plan cycle (MM/YY) *</Label>
+                    <Label>Expiry (MM/YY) *</Label>
                     <Input
                       value={paymentForm.expiry}
                       onChange={(e) => setPaymentForm((prev) => ({ ...prev, expiry: toExpiry(e.target.value) }))}
@@ -760,7 +760,7 @@ export default function QosSettings() {
                     {paymentErrors.expiry && <p className="text-xs text-destructive mt-1">{paymentErrors.expiry}</p>}
                   </div>
                   <div>
-                    <Label>Demo code *</Label>
+                    <Label>CVV *</Label>
                     <Input
                       value={paymentForm.cvv}
                       onChange={(e) => setPaymentForm((prev) => ({ ...prev, cvv: toCvv(e.target.value) }))}
@@ -787,7 +787,7 @@ export default function QosSettings() {
                 <div className="flex justify-between gap-2">
                   <Button variant="outline" onClick={() => setOnboardingStep(2)} disabled={topupLoading}>Back</Button>
                   <Button onClick={completePaidOnboarding} disabled={topupLoading}>
-                    {topupLoading ? "Processing..." : `Grant Rs ${selectedPlanConfig.amountInrMonthly} demo top-up`}
+                    {topupLoading ? "Processing..." : `Pay Rs ${selectedPlanConfig.amountInrMonthly}`}
                   </Button>
                 </div>
               </div>
@@ -796,8 +796,8 @@ export default function QosSettings() {
             {onboardingStep === 4 && onboardingResult && (
               <div className="space-y-4">
                 <div className="rounded-lg border bg-emerald-50 p-4">
-                  <p className="text-sm text-emerald-800">Demo subscription activated successfully.</p>
-                  <p className="font-semibold mt-1">Demo reference: {onboardingResult.paymentRef}</p>
+                  <p className="text-sm text-emerald-800">Subscription activated successfully.</p>
+                  <p className="font-semibold mt-1">Payment reference: {onboardingResult.paymentRef}</p>
                   <p className="text-sm mt-1">Plan: {onboardingResult.planName}</p>
                   <p className="text-sm mt-1">Tokens added: {new Intl.NumberFormat("en-IN").format(onboardingResult.tokensAdded)}</p>
                 </div>

@@ -67,15 +67,13 @@ export const TOPUP_PACKAGES = [
 
 const normalizePaymentMode = (raw: string) => {
   const mode = raw.toLowerCase();
-  if (!mode) return "mock";
   if (mode === "sandbox" || mode === "test") return "sandbox";
   if (mode === "mock") return "sandbox";
-  if (mode === "demo") return "sandbox";
   return mode;
 };
 
 export const PAYMENT_MODE = normalizePaymentMode(
-  Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "mock",
+  Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "sandbox",
 );
 
 export function getTokenCost(operation: "latency" | "throughput" | "uptime" | "fullReport" | "historicalAnalysis" | "anomalyScan") {

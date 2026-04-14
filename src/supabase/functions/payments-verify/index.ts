@@ -1,6 +1,28 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+};
+
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+
+const textEncoder = new TextEncoder();
+const toHex = (buffer: ArrayBuffer): string =>
+  Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+const signaturesMatch = async (secret: string, payload: string, providedSignature?: string | null): Promise<boolean> => {
+  if (!providedSignature) return false;
+  const key = await crypto.subtle.importKey("raw", textEncoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signatureBuffer = await crypto.subtle.sign("HMAC", key, textEncoder.encode(payload));
+  return toHex(signatureBuffer) === providedSignature;
+};
 
 type VerifyBody = {
   razorpay_order_id?: string;
@@ -17,14 +39,22 @@ type CreditTokensResponse = {
 };
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders(req) });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405, req);
+  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const paymentModeRaw = (Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "sandbox").toLowerCase();
+  const isMockMode = paymentModeRaw === "mock" || paymentModeRaw === "sandbox" || paymentModeRaw === "test";
+  const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
+
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
-    return jsonResponse({ error: "Supabase environment is not configured." }, 500, req);
+    return jsonResponse({ error: "Supabase environment is not configured." }, 500);
+  }
+
+  if (!isMockMode && !razorpayKeySecret) {
+    return jsonResponse({ error: "Razorpay key secret is not configured." }, 500);
   }
 
   try {
@@ -32,18 +62,21 @@ serve(async (req) => {
       global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
     });
 
-    const {
-      data: { user },
-      error: authError,
-    } = await authClient.auth.getUser();
-    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401, req);
+    const { data: { user }, error: authError } = await authClient.auth.getUser();
+    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401);
 
     const body = (await req.json().catch(() => ({}))) as VerifyBody;
     const orderId = body.razorpay_order_id?.trim();
-    const paymentId = body.razorpay_payment_id?.trim() || `demo_pay_${crypto.randomUUID()}`;
+    const paymentId = body.razorpay_payment_id?.trim() || `mock_pay_${crypto.randomUUID()}`;
+    const signature = body.razorpay_signature?.trim();
 
-    if (!orderId) {
-      return jsonResponse({ error: "Missing required field: razorpay_order_id." }, 400, req);
+    if (!orderId || (!isMockMode && (!paymentId || !signature))) {
+      return jsonResponse({ error: "Missing required fields: razorpay_order_id, razorpay_payment_id, razorpay_signature." }, 400);
+    }
+
+    if (!isMockMode) {
+      const isValid = await signaturesMatch(razorpayKeySecret, `${orderId}|${paymentId}`, signature);
+      if (!isValid) return jsonResponse({ error: "Invalid Razorpay signature." }, 400);
     }
 
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
@@ -53,13 +86,13 @@ serve(async (req) => {
       .eq("gateway_order_id", orderId)
       .maybeSingle();
 
-    if (paymentError) return jsonResponse({ error: "Failed to load payment record", details: paymentError.message }, 500, req);
-    if (!payment) return jsonResponse({ error: "Payment record not found." }, 404, req);
-    if (payment.user_id !== user.id) return jsonResponse({ error: "Forbidden" }, 403, req);
+    if (paymentError) return jsonResponse({ error: "Failed to load payment record", details: paymentError.message }, 500);
+    if (!payment) return jsonResponse({ error: "Payment record not found." }, 404);
+    if (payment.user_id !== user.id) return jsonResponse({ error: "Forbidden" }, 403);
 
     if (payment.status === "success") {
       const { data: profile } = await adminClient.from("user_profiles").select("token_balance").eq("id", user.id).maybeSingle();
-      return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null, billingMode: "demo" }, 200, req);
+      return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null });
     }
 
     const { data: existingProfile, error: existingProfileError } = await adminClient
@@ -69,7 +102,7 @@ serve(async (req) => {
       .maybeSingle();
 
     if (existingProfileError) {
-      return jsonResponse({ error: "Failed to load user profile", details: existingProfileError.message }, 500, req);
+      return jsonResponse({ error: "Failed to load user profile", details: existingProfileError.message }, 500);
     }
 
     if (!existingProfile) {
@@ -84,7 +117,7 @@ serve(async (req) => {
         { onConflict: "id" },
       );
       if (createProfileError) {
-        return jsonResponse({ error: "Failed to initialize user profile", details: createProfileError.message }, 500, req);
+        return jsonResponse({ error: "Failed to initialize user profile", details: createProfileError.message }, 500);
       }
     }
 
@@ -114,11 +147,11 @@ serve(async (req) => {
     }
 
     if (!parsedCredit) {
-      return jsonResponse({ error: "Failed to credit tokens", details: creditErrorMessage ?? "credit_tokens failed" }, 500, req);
+      return jsonResponse({ error: "Failed to credit tokens", details: creditErrorMessage ?? "credit_tokens failed" }, 500);
     }
 
     if (!parsedCredit.success) {
-      return jsonResponse({ error: parsedCredit.error ?? "credit_tokens failed", details: parsedCredit }, 500, req);
+      return jsonResponse({ error: parsedCredit.error ?? "credit_tokens failed", details: parsedCredit }, 500);
     }
 
     const { error: updateError } = await adminClient
@@ -126,16 +159,17 @@ serve(async (req) => {
       .update({ status: "success", gateway_payment_id: paymentId })
       .eq("id", payment.id);
 
-    if (updateError) return jsonResponse({ error: "Failed to update payment status", details: updateError.message }, 500, req);
+    if (updateError) return jsonResponse({ error: "Failed to update payment status", details: updateError.message }, 500);
 
     return jsonResponse({
       success: true,
       newBalance: parsedCredit.balance ?? null,
       credited: parsedCredit.credited ?? payment.tokens_purchased,
-      billingMode: "demo",
-    }, 200, req);
+      billingMode: isMockMode ? "mock" : "real",
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
-    return jsonResponse({ error: message }, 500, req);
+    return jsonResponse({ error: message }, 500);
   }
 });
+
