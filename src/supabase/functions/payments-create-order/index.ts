@@ -31,8 +31,6 @@ const PACKS: Record<Exclude<PackName, "custom">, PackConfig> = {
   growth: { amountInRupees: 299, tokens: 15000 },
 };
 
-const RAZORPAY_ORDERS_URL = "https://api.razorpay.com/v1/orders";
-
 const normalizeCustomAmount = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
   if (typeof value === "string" && value.trim() !== "") {
@@ -49,17 +47,8 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-  const paymentModeRaw = (Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "sandbox").toLowerCase();
-  const isMockMode = paymentModeRaw === "mock" || paymentModeRaw === "sandbox" || paymentModeRaw === "test";
-  const razorpayKeyId = Deno.env.get("RAZORPAY_KEY_ID") ?? "";
-  const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
-
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
     return jsonResponse({ error: "Supabase environment is not configured." }, 500, req);
-  }
-
-  if (!isMockMode && (!razorpayKeyId || !razorpayKeySecret)) {
-    return jsonResponse({ error: "Razorpay keys are not configured." }, 500, req);
   }
 
   try {
@@ -100,39 +89,7 @@ serve(async (req) => {
     const amountInPaise = amountInRupees * 100;
     const idempotencyKey = crypto.randomUUID();
 
-    let gatewayOrderId: string | undefined;
-    if (isMockMode) {
-      gatewayOrderId = `mock_order_${idempotencyKey}`;
-    } else {
-      const razorpayAuth = btoa(`${razorpayKeyId}:${razorpayKeySecret}`);
-      const receipt = `pay_${idempotencyKey}`;
-
-      const razorpayRes = await fetch(RAZORPAY_ORDERS_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Basic ${razorpayAuth}` },
-        body: JSON.stringify({
-          amount: amountInPaise,
-          currency: "INR",
-          receipt,
-          notes: {
-            user_id: user.id,
-            pack_name: packName,
-            tokens_purchased: String(tokensPurchased),
-            idempotency_key: idempotencyKey,
-          },
-        }),
-      });
-
-      if (!razorpayRes.ok) {
-        const errText = await razorpayRes.text().catch(() => "");
-        return jsonResponse({ error: "Failed to create Razorpay order", details: errText || razorpayRes.statusText }, 502, req);
-      }
-
-      const razorpayOrder = await razorpayRes.json();
-      gatewayOrderId = razorpayOrder?.id as string | undefined;
-    }
-
-    if (!gatewayOrderId) return jsonResponse({ error: "Payment order ID was not generated." }, 502, req);
+    const gatewayOrderId = `demo_order_${idempotencyKey}`;
 
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
     let paymentRow: { id: string } | null = null;
@@ -251,11 +208,13 @@ serve(async (req) => {
       orderId: gatewayOrderId,
       amount: amountInPaise,
       currency: "INR",
-      key: isMockMode ? "mock_key" : razorpayKeyId,
+      key: "demo_key",
       pack: packName,
       tokensPurchased,
-      billingMode: isMockMode ? "mock" : "real",
-      isMock: isMockMode,
+      billingMode: "demo",
+      isMock: true,
+      isMockAutoVerified: true,
+      newBalance: null,
     }, 200, req);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";

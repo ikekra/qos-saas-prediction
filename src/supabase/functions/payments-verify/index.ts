@@ -2,17 +2,6 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 
-const textEncoder = new TextEncoder();
-const toHex = (buffer: ArrayBuffer): string =>
-  Array.from(new Uint8Array(buffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
-
-const signaturesMatch = async (secret: string, payload: string, providedSignature?: string | null): Promise<boolean> => {
-  if (!providedSignature) return false;
-  const key = await crypto.subtle.importKey("raw", textEncoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const signatureBuffer = await crypto.subtle.sign("HMAC", key, textEncoder.encode(payload));
-  return toHex(signatureBuffer) === providedSignature;
-};
-
 type VerifyBody = {
   razorpay_order_id?: string;
   razorpay_payment_id?: string;
@@ -34,16 +23,8 @@ serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-  const paymentModeRaw = (Deno.env.get("PAYMENT_MODE") ?? Deno.env.get("BILLING_MODE") ?? "sandbox").toLowerCase();
-  const isMockMode = paymentModeRaw === "mock" || paymentModeRaw === "sandbox" || paymentModeRaw === "test";
-  const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
-
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
     return jsonResponse({ error: "Supabase environment is not configured." }, 500, req);
-  }
-
-  if (!isMockMode && !razorpayKeySecret) {
-    return jsonResponse({ error: "Razorpay key secret is not configured." }, 500, req);
   }
 
   try {
@@ -59,16 +40,10 @@ serve(async (req) => {
 
     const body = (await req.json().catch(() => ({}))) as VerifyBody;
     const orderId = body.razorpay_order_id?.trim();
-    const paymentId = body.razorpay_payment_id?.trim() || `mock_pay_${crypto.randomUUID()}`;
-    const signature = body.razorpay_signature?.trim();
+    const paymentId = body.razorpay_payment_id?.trim() || `demo_pay_${crypto.randomUUID()}`;
 
-    if (!orderId || (!isMockMode && (!paymentId || !signature))) {
-      return jsonResponse({ error: "Missing required fields: razorpay_order_id, razorpay_payment_id, razorpay_signature." }, 400, req);
-    }
-
-    if (!isMockMode) {
-      const isValid = await signaturesMatch(razorpayKeySecret, `${orderId}|${paymentId}`, signature);
-      if (!isValid) return jsonResponse({ error: "Invalid Razorpay signature." }, 400, req);
+    if (!orderId) {
+      return jsonResponse({ error: "Missing required field: razorpay_order_id." }, 400, req);
     }
 
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
@@ -84,7 +59,7 @@ serve(async (req) => {
 
     if (payment.status === "success") {
       const { data: profile } = await adminClient.from("user_profiles").select("token_balance").eq("id", user.id).maybeSingle();
-      return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null }, 200, req);
+      return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null, billingMode: "demo" }, 200, req);
     }
 
     const { data: existingProfile, error: existingProfileError } = await adminClient
@@ -157,7 +132,7 @@ serve(async (req) => {
       success: true,
       newBalance: parsedCredit.balance ?? null,
       credited: parsedCredit.credited ?? payment.tokens_purchased,
-      billingMode: isMockMode ? "mock" : "real",
+      billingMode: "demo",
     }, 200, req);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";

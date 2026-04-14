@@ -419,8 +419,8 @@ export default function Profile() {
         }
 
         toast({
-          title: 'Mock top-up successful',
-          description: 'Tokens credited instantly in mock mode.',
+          title: 'Demo top-up successful',
+          description: 'Tokens credited instantly in demo billing mode.',
         });
         await fetchSubscriptionData();
         await refreshTokenUsage();
@@ -430,8 +430,8 @@ export default function Profile() {
       const razorpayReady = await loadRazorpayScript();
       if (!razorpayReady || !window.Razorpay) {
         toast({
-          title: 'Checkout unavailable',
-          description: 'Could not load Razorpay checkout. Please try again.',
+          title: 'Demo checkout unavailable',
+          description: 'Could not load the demo checkout flow. Please try again.',
           variant: 'destructive',
         });
         return;
@@ -462,7 +462,7 @@ export default function Profile() {
 
           toast({
             title: 'Top-up successful',
-            description: 'Payment verified and tokens credited.',
+            description: 'Demo payment verified and tokens credited.',
           });
           await fetchSubscriptionData();
           await refreshTokenUsage();
