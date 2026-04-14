@@ -1,19 +1,19 @@
-﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { getCorsHeaders } from "../_shared/cors.ts";
 
 const encoder = new TextEncoder();
-
-const sseHeaders = {
-  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache, no-transform",
-  Connection: "keep-alive",
-};
-
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 serve(async (req) => {
+  const baseHeaders = getCorsHeaders(req);
+  const sseHeaders = {
+    ...baseHeaders,
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  };
+
   if (req.method === "OPTIONS") return new Response(null, { headers: sseHeaders });
   if (req.method !== "GET") return new Response("Method not allowed", { status: 405, headers: sseHeaders });
 
@@ -59,8 +59,18 @@ serve(async (req) => {
       let lastTopupId: string | null = null;
       let lastTxId: string | null = null;
       let lastPaymentState: string | null = null;
-
       const heartbeat = setInterval(() => sendComment("ping"), 30000);
+
+      const closeStream = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(heartbeat);
+        try {
+          controller.close();
+        } catch {
+          // Ignore double-close races on abrupt disconnects.
+        }
+      };
 
       const poll = async () => {
         while (!closed) {
@@ -135,8 +145,7 @@ serve(async (req) => {
                 : txDescription.includes("refund")
                   ? "TOKEN_REFUNDED"
                   : "TOKEN_TOPUP";
-            const txBalance =
-              typeof txRow.balance_after === "number" ? Number(txRow.balance_after) : currentBalance;
+            const txBalance = typeof txRow.balance_after === "number" ? Number(txRow.balance_after) : currentBalance;
             send({
               type: txEventType,
               newBalance: txBalance,
@@ -167,18 +176,13 @@ serve(async (req) => {
         }
       };
 
-      poll().catch((err) => {
-        console.error("token-stream poll error", err);
+      poll().catch((error) => {
+        console.error("token-stream poll error", error);
       });
 
-      req.signal.addEventListener("abort", () => {
-        closed = true;
-        clearInterval(heartbeat);
-        controller.close();
-      });
+      req.signal.addEventListener("abort", closeStream, { once: true });
     },
   });
 
   return new Response(stream, { headers: sseHeaders });
 });
-

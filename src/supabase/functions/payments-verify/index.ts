@@ -1,17 +1,6 @@
-﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-};
-
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 
 const textEncoder = new TextEncoder();
 const toHex = (buffer: ArrayBuffer): string =>
@@ -39,8 +28,8 @@ type CreditTokensResponse = {
 };
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
+  if (req.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders(req) });
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405, req);
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
@@ -50,11 +39,11 @@ serve(async (req) => {
   const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
-    return jsonResponse({ error: "Supabase environment is not configured." }, 500);
+    return jsonResponse({ error: "Supabase environment is not configured." }, 500, req);
   }
 
   if (!isMockMode && !razorpayKeySecret) {
-    return jsonResponse({ error: "Razorpay key secret is not configured." }, 500);
+    return jsonResponse({ error: "Razorpay key secret is not configured." }, 500, req);
   }
 
   try {
@@ -62,8 +51,11 @@ serve(async (req) => {
       global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
     });
 
-    const { data: { user }, error: authError } = await authClient.auth.getUser();
-    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401);
+    const {
+      data: { user },
+      error: authError,
+    } = await authClient.auth.getUser();
+    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401, req);
 
     const body = (await req.json().catch(() => ({}))) as VerifyBody;
     const orderId = body.razorpay_order_id?.trim();
@@ -71,12 +63,12 @@ serve(async (req) => {
     const signature = body.razorpay_signature?.trim();
 
     if (!orderId || (!isMockMode && (!paymentId || !signature))) {
-      return jsonResponse({ error: "Missing required fields: razorpay_order_id, razorpay_payment_id, razorpay_signature." }, 400);
+      return jsonResponse({ error: "Missing required fields: razorpay_order_id, razorpay_payment_id, razorpay_signature." }, 400, req);
     }
 
     if (!isMockMode) {
       const isValid = await signaturesMatch(razorpayKeySecret, `${orderId}|${paymentId}`, signature);
-      if (!isValid) return jsonResponse({ error: "Invalid Razorpay signature." }, 400);
+      if (!isValid) return jsonResponse({ error: "Invalid Razorpay signature." }, 400, req);
     }
 
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
@@ -86,13 +78,13 @@ serve(async (req) => {
       .eq("gateway_order_id", orderId)
       .maybeSingle();
 
-    if (paymentError) return jsonResponse({ error: "Failed to load payment record", details: paymentError.message }, 500);
-    if (!payment) return jsonResponse({ error: "Payment record not found." }, 404);
-    if (payment.user_id !== user.id) return jsonResponse({ error: "Forbidden" }, 403);
+    if (paymentError) return jsonResponse({ error: "Failed to load payment record", details: paymentError.message }, 500, req);
+    if (!payment) return jsonResponse({ error: "Payment record not found." }, 404, req);
+    if (payment.user_id !== user.id) return jsonResponse({ error: "Forbidden" }, 403, req);
 
     if (payment.status === "success") {
       const { data: profile } = await adminClient.from("user_profiles").select("token_balance").eq("id", user.id).maybeSingle();
-      return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null });
+      return jsonResponse({ success: true, idempotent: true, newBalance: profile?.token_balance ?? null }, 200, req);
     }
 
     const { data: existingProfile, error: existingProfileError } = await adminClient
@@ -102,7 +94,7 @@ serve(async (req) => {
       .maybeSingle();
 
     if (existingProfileError) {
-      return jsonResponse({ error: "Failed to load user profile", details: existingProfileError.message }, 500);
+      return jsonResponse({ error: "Failed to load user profile", details: existingProfileError.message }, 500, req);
     }
 
     if (!existingProfile) {
@@ -117,7 +109,7 @@ serve(async (req) => {
         { onConflict: "id" },
       );
       if (createProfileError) {
-        return jsonResponse({ error: "Failed to initialize user profile", details: createProfileError.message }, 500);
+        return jsonResponse({ error: "Failed to initialize user profile", details: createProfileError.message }, 500, req);
       }
     }
 
@@ -147,11 +139,11 @@ serve(async (req) => {
     }
 
     if (!parsedCredit) {
-      return jsonResponse({ error: "Failed to credit tokens", details: creditErrorMessage ?? "credit_tokens failed" }, 500);
+      return jsonResponse({ error: "Failed to credit tokens", details: creditErrorMessage ?? "credit_tokens failed" }, 500, req);
     }
 
     if (!parsedCredit.success) {
-      return jsonResponse({ error: parsedCredit.error ?? "credit_tokens failed", details: parsedCredit }, 500);
+      return jsonResponse({ error: parsedCredit.error ?? "credit_tokens failed", details: parsedCredit }, 500, req);
     }
 
     const { error: updateError } = await adminClient
@@ -159,17 +151,16 @@ serve(async (req) => {
       .update({ status: "success", gateway_payment_id: paymentId })
       .eq("id", payment.id);
 
-    if (updateError) return jsonResponse({ error: "Failed to update payment status", details: updateError.message }, 500);
+    if (updateError) return jsonResponse({ error: "Failed to update payment status", details: updateError.message }, 500, req);
 
     return jsonResponse({
       success: true,
       newBalance: parsedCredit.balance ?? null,
       credited: parsedCredit.credited ?? payment.tokens_purchased,
       billingMode: isMockMode ? "mock" : "real",
-    });
+    }, 200, req);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
-    return jsonResponse({ error: message }, 500);
+    return jsonResponse({ error: message }, 500, req);
   }
 });
-

@@ -1,17 +1,6 @@
-﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-};
-
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
+import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 
 type PackName = "student" | "basic" | "pro" | "enterprise" | "starter" | "growth" | "custom";
 
@@ -54,8 +43,8 @@ const normalizeCustomAmount = (value: unknown): number | null => {
 };
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
+  if (req.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders(req) });
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405, req);
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
@@ -66,11 +55,11 @@ serve(async (req) => {
   const razorpayKeySecret = Deno.env.get("RAZORPAY_KEY_SECRET") ?? "";
 
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
-    return jsonResponse({ error: "Supabase environment is not configured." }, 500);
+    return jsonResponse({ error: "Supabase environment is not configured." }, 500, req);
   }
 
   if (!isMockMode && (!razorpayKeyId || !razorpayKeySecret)) {
-    return jsonResponse({ error: "Razorpay keys are not configured." }, 500);
+    return jsonResponse({ error: "Razorpay keys are not configured." }, 500, req);
   }
 
   try {
@@ -83,12 +72,12 @@ serve(async (req) => {
       error: authError,
     } = await authClient.auth.getUser();
 
-    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401);
+    if (authError || !user) return jsonResponse({ error: "Unauthorized" }, 401, req);
 
     const body = (await req.json().catch(() => ({}))) as CreateOrderBody;
     const pack = body.pack;
     if (!pack || !["student", "basic", "pro", "enterprise", "starter", "growth", "custom"].includes(pack)) {
-      return jsonResponse({ error: "Invalid pack value." }, 400);
+      return jsonResponse({ error: "Invalid pack value." }, 400, req);
     }
 
     let amountInRupees: number;
@@ -98,7 +87,7 @@ serve(async (req) => {
     if (pack === "custom") {
       const customAmount = normalizeCustomAmount(body.customAmount);
       if (!customAmount || customAmount <= 0) {
-        return jsonResponse({ error: "customAmount must be a positive number." }, 400);
+        return jsonResponse({ error: "customAmount must be a positive number." }, 400, req);
       }
       amountInRupees = customAmount;
       tokensPurchased = customAmount * 25;
@@ -136,14 +125,14 @@ serve(async (req) => {
 
       if (!razorpayRes.ok) {
         const errText = await razorpayRes.text().catch(() => "");
-        return jsonResponse({ error: "Failed to create Razorpay order", details: errText || razorpayRes.statusText }, 502);
+        return jsonResponse({ error: "Failed to create Razorpay order", details: errText || razorpayRes.statusText }, 502, req);
       }
 
       const razorpayOrder = await razorpayRes.json();
       gatewayOrderId = razorpayOrder?.id as string | undefined;
     }
 
-    if (!gatewayOrderId) return jsonResponse({ error: "Payment order ID was not generated." }, 502);
+    if (!gatewayOrderId) return jsonResponse({ error: "Payment order ID was not generated." }, 502, req);
 
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
     let paymentRow: { id: string } | null = null;
@@ -168,7 +157,7 @@ serve(async (req) => {
       const insertMessage = insertError.message?.toLowerCase() ?? "";
       const isColumnMismatch = insertMessage.includes("column") && insertMessage.includes("does not exist");
       if (!isColumnMismatch) {
-        return jsonResponse({ error: "Failed to save payment record", details: insertError.message }, 500);
+        return jsonResponse({ error: "Failed to save payment record", details: insertError.message }, 500, req);
       }
 
       const { data: minimalInsertRow, error: minimalInsertError } = await adminClient
@@ -188,7 +177,7 @@ serve(async (req) => {
           error: "Failed to save payment record",
           details: minimalInsertError.message,
           fallbackDetails: insertError.message,
-        }, 500);
+        }, 500, req);
       }
 
       paymentRow = minimalInsertRow;
@@ -224,11 +213,11 @@ serve(async (req) => {
         return jsonResponse({
           error: "Failed to credit tokens in mock mode",
           details: creditErrorMessage ?? "credit_tokens failed",
-        }, 500);
+        }, 500, req);
       }
 
       if (!creditResult.success) {
-        return jsonResponse({ error: creditResult.error ?? "credit_tokens failed", details: creditResult }, 500);
+        return jsonResponse({ error: creditResult.error ?? "credit_tokens failed", details: creditResult }, 500, req);
       }
 
       const { error: updateError } = await adminClient
@@ -240,7 +229,7 @@ serve(async (req) => {
         .eq("id", paymentRow!.id);
 
       if (updateError) {
-        return jsonResponse({ error: "Failed to mark mock payment as success", details: updateError.message }, 500);
+        return jsonResponse({ error: "Failed to mark mock payment as success", details: updateError.message }, 500, req);
       }
 
       return jsonResponse({
@@ -255,7 +244,7 @@ serve(async (req) => {
         isMockAutoVerified: true,
         credited: creditResult.credited ?? tokensPurchased,
         newBalance: creditResult.balance ?? null,
-      });
+      }, 200, req);
     }
 
     return jsonResponse({
@@ -267,10 +256,9 @@ serve(async (req) => {
       tokensPurchased,
       billingMode: isMockMode ? "mock" : "real",
       isMock: isMockMode,
-    });
+    }, 200, req);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
-    return jsonResponse({ error: message }, 500);
+    return jsonResponse({ error: message }, 500, req);
   }
 });
-
