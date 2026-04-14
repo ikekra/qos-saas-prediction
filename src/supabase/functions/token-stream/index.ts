@@ -1,20 +1,19 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { loadPerformanceProfile } from "../_shared/performance-run-quota.ts";
-import { getCorsHeaders } from "../_shared/cors.ts";
 
 const encoder = new TextEncoder();
+
+const sseHeaders = {
+  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache, no-transform",
+  Connection: "keep-alive",
+};
+
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 serve(async (req) => {
-  const baseHeaders = getCorsHeaders(req);
-  const sseHeaders = {
-    ...baseHeaders,
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-  };
-
   if (req.method === "OPTIONS") return new Response(null, { headers: sseHeaders });
   if (req.method !== "GET") return new Response("Method not allowed", { status: 405, headers: sseHeaders });
 
@@ -60,23 +59,17 @@ serve(async (req) => {
       let lastTopupId: string | null = null;
       let lastTxId: string | null = null;
       let lastPaymentState: string | null = null;
-      const heartbeat = setInterval(() => sendComment("ping"), 30000);
 
-      const closeStream = () => {
-        if (closed) return;
-        closed = true;
-        clearInterval(heartbeat);
-        try {
-          controller.close();
-        } catch {
-          // Ignore double-close races on abrupt disconnects.
-        }
-      };
+      const heartbeat = setInterval(() => sendComment("ping"), 30000);
 
       const poll = async () => {
         while (!closed) {
           const [profileRes, topupRes, txRes, paymentRes] = await Promise.all([
-            loadPerformanceProfile(admin as never, user),
+            admin
+              .from("user_profiles")
+              .select("token_balance, lifetime_tokens_used")
+              .eq("id", user.id)
+              .limit(1),
             admin
               .from("topup_records")
               .select("id, created_at")
@@ -97,9 +90,9 @@ serve(async (req) => {
               .limit(1),
           ]);
 
-          const profile = profileRes as { token_balance?: number; lifetime_tokens_used?: number; available?: boolean } | null;
-          const currentBalance = Number(profile?.token_balance ?? 0);
-          const currentLifetime = Number(profile?.lifetime_tokens_used ?? 0);
+          const profile = (profileRes.data?.[0] as { token_balance?: number; lifetime_tokens_used?: number } | undefined) ?? {};
+          const currentBalance = Number(profile.token_balance ?? 0);
+          const currentLifetime = Number(profile.lifetime_tokens_used ?? 0);
           const currentTopupId = (topupRes.data?.[0] as { id?: string } | undefined)?.id ?? null;
           const txRow =
             (txRes.data?.[0] as {
@@ -142,7 +135,8 @@ serve(async (req) => {
                 : txDescription.includes("refund")
                   ? "TOKEN_REFUNDED"
                   : "TOKEN_TOPUP";
-            const txBalance = typeof txRow.balance_after === "number" ? Number(txRow.balance_after) : currentBalance;
+            const txBalance =
+              typeof txRow.balance_after === "number" ? Number(txRow.balance_after) : currentBalance;
             send({
               type: txEventType,
               newBalance: txBalance,
@@ -173,13 +167,18 @@ serve(async (req) => {
         }
       };
 
-      poll().catch((error) => {
-        console.error("token-stream poll error", error);
+      poll().catch((err) => {
+        console.error("token-stream poll error", err);
       });
 
-      req.signal.addEventListener("abort", closeStream, { once: true });
+      req.signal.addEventListener("abort", () => {
+        closed = true;
+        clearInterval(heartbeat);
+        controller.close();
+      });
     },
   });
 
   return new Response(stream, { headers: sseHeaders });
 });
+

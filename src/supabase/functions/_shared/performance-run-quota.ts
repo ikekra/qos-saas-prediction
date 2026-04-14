@@ -19,21 +19,6 @@ type ProfileRow = {
   account_manager_webhook?: string | null;
 };
 
-type ProfileSnapshot = ProfileRow & {
-  available: boolean;
-  source: "user_profiles" | "token_transactions" | "default";
-};
-
-const isMissingRelationError = (message?: string | null) => {
-  const normalized = String(message ?? "").toLowerCase();
-  return (
-    normalized.includes("does not exist") ||
-    normalized.includes("could not find the table") ||
-    normalized.includes("relation") ||
-    normalized.includes("schema cache")
-  );
-};
-
 type ReservedRunRow = {
   success: boolean;
   blocked: boolean;
@@ -161,101 +146,47 @@ const summarizeResult = (params: {
   return parts.length ? parts.join(", ") : "completed";
 };
 
-export async function loadPerformanceProfile(adminClient: AdminClient, user: User): Promise<ProfileSnapshot> {
-  const defaultReset = buildNextResetDate(null);
-  const defaultProfile: ProfileSnapshot = {
-    token_balance: 0,
-    lifetime_tokens_used: 0,
-    email: user.email ?? `${user.id}@local.user`,
-    performance_plan: "standard",
-    performance_cycle_reset_at: defaultReset,
-    available: false,
-    source: "default",
-  };
-
+async function ensureUserProfile(adminClient: AdminClient, user: User): Promise<ProfileRow> {
   const profileSelect = await adminClient
     .from("user_profiles")
     .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
     .eq("id", user.id)
     .limit(1);
 
-  if (!profileSelect.error) {
-    const existing = profileSelect.data?.[0] as ProfileRow | undefined;
-    if (existing) {
-      return {
-        ...defaultProfile,
-        ...existing,
-        available: true,
-        source: "user_profiles",
-      };
-    }
-
-    const profileCreate = await adminClient
-      .from("user_profiles")
-      .upsert(
-        {
-          id: user.id,
-          email: user.email ?? `${user.id}@local.user`,
-          token_balance: 0,
-          lifetime_tokens_used: 0,
-          performance_plan: "standard",
-          performance_cycle_reset_at: defaultReset,
-        },
-        { onConflict: "id" },
-      )
-      .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
-      .limit(1);
-
-    if (!profileCreate.error) {
-      return {
-        ...defaultProfile,
-        ...(profileCreate.data?.[0] as ProfileRow | undefined),
-        available: true,
-        source: "user_profiles",
-      };
-    }
-
-    if (!isMissingRelationError(profileCreate.error.message)) {
-      throw new Error(`Failed to initialize profile: ${profileCreate.error.message}`);
-    }
-  } else if (!isMissingRelationError(profileSelect.error.message)) {
+  if (profileSelect.error) {
     throw new Error(`Failed to load user profile: ${profileSelect.error.message}`);
   }
 
-  const [tokenBalanceResult, subscriptionResult] = await Promise.all([
-    adminClient
-      .from("token_transactions")
-      .select("balance_after, created_at")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(1),
-    adminClient
-      .from("subscriptions")
-      .select("plan, current_period_end")
-      .eq("user_id", user.id)
-      .in("status", ["active", "trialing", "past_due"])
-      .order("current_period_end", { ascending: false })
-      .limit(1),
-  ]);
+  const existing = profileSelect.data?.[0] as ProfileRow | undefined;
+  if (existing) return existing;
 
-  const balanceRow = tokenBalanceResult.error || isMissingRelationError(tokenBalanceResult.error?.message)
-    ? null
-    : (tokenBalanceResult.data?.[0] as { balance_after?: number | null } | undefined) ?? null;
-  const subscriptionRow = subscriptionResult.error || isMissingRelationError(subscriptionResult.error?.message)
-    ? null
-    : (subscriptionResult.data?.[0] as { plan?: string | null; current_period_end?: string | null } | undefined) ?? null;
+  const defaultReset = buildNextResetDate(null);
+  const profileCreate = await adminClient
+    .from("user_profiles")
+    .upsert(
+      {
+        id: user.id,
+        email: user.email ?? `${user.id}@local.user`,
+        token_balance: 0,
+        lifetime_tokens_used: 0,
+        performance_plan: "standard",
+        performance_cycle_reset_at: defaultReset,
+      },
+      { onConflict: "id" },
+    )
+    .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
+    .limit(1);
 
-  const inferredPlan = normalizePlan(subscriptionRow?.plan ?? defaultProfile.performance_plan);
-  const inferredReset = buildNextResetDate(subscriptionRow?.current_period_end ?? null);
+  if (profileCreate.error) {
+    throw new Error(`Failed to initialize profile: ${profileCreate.error.message}`);
+  }
 
-  return {
-    ...defaultProfile,
-    token_balance: Number(balanceRow?.balance_after ?? 0),
-    performance_plan: inferredPlan,
-    performance_run_limit: normalizeLimit(inferredPlan, null),
-    performance_cycle_reset_at: inferredReset,
-    available: false,
-    source: tokenBalanceResult.error || subscriptionResult.error ? "default" : "token_transactions",
+  return (profileCreate.data?.[0] as ProfileRow | undefined) ?? {
+    token_balance: 0,
+    lifetime_tokens_used: 0,
+    email: user.email ?? `${user.id}@local.user`,
+    performance_plan: "standard",
+    performance_cycle_reset_at: defaultReset,
   };
 }
 
@@ -282,7 +213,7 @@ function resolveQuotaConfig(user: User, profile: ProfileRow) {
 }
 
 export async function getPerformanceQuotaState(adminClient: AdminClient, user: User): Promise<PerformanceQuotaState> {
-  const profile = await loadPerformanceProfile(adminClient, user);
+  const profile = await ensureUserProfile(adminClient, user);
   const teamMembership = await adminClient
     .from("team_members")
     .select("team_id, role, status, teams!inner(id, plan, max_members, deleted_at)")
@@ -290,10 +221,6 @@ export async function getPerformanceQuotaState(adminClient: AdminClient, user: U
     .eq("status", "active")
     .is("teams.deleted_at", null)
     .maybeSingle();
-
-  if (teamMembership.error && !isMissingRelationError(teamMembership.error.message)) {
-    throw new Error(`Failed to load team membership: ${teamMembership.error.message}`);
-  }
 
   if (!teamMembership.error && teamMembership.data?.team_id) {
     const teamPlan = normalizePlan((teamMembership.data.teams as { plan?: string | null })?.plan);
@@ -304,42 +231,40 @@ export async function getPerformanceQuotaState(adminClient: AdminClient, user: U
     });
 
     if (quotaCycle.error) {
-      if (!isMissingRelationError(quotaCycle.error.message)) {
-        throw new Error(`Failed to load team quota: ${quotaCycle.error.message}`);
-      }
-    } else {
-      const quotaRow = Array.isArray(quotaCycle.data)
-        ? (quotaCycle.data[0] as Record<string, unknown> | undefined)
-        : (quotaCycle.data as Record<string, unknown> | undefined);
-
-      const runsUsed = Number(quotaRow?.runs_used ?? 0);
-      const runsRemaining = Math.max(0, runLimit - runsUsed);
-      const resetDate = String(quotaRow?.reset_at ?? buildNextResetDate(null));
-
-      return {
-        userId: user.id,
-        orgId: null,
-        teamId: String(teamMembership.data.team_id),
-        plan: teamPlan,
-        scopeType: "team",
-        scopeId: String(teamMembership.data.team_id),
-        runLimit,
-        runsUsed,
-        runsRemaining,
-        runNumber: runsUsed,
-        resetDate,
-        accountManagerWebhook: null,
-        warning: runsRemaining > 0 && runsRemaining <= 25 ? `Your team has ${runsRemaining} shared test runs left this cycle.` : null,
-        exhaustedMessage:
-          runsRemaining === 0
-            ? `Your team has used all ${runLimit} shared performance test runs. The quota resets on ${new Date(resetDate).toLocaleDateString("en-IN")}.`
-            : null,
-        ctaLabel: teamPlan === "pro" ? "Upgrade to Enterprise" : null,
-        softAlertNeeded: false,
-        hardAlertNeeded: false,
-        teamRole: (teamMembership.data.role as "owner" | "admin" | "member") ?? null,
-      };
+      throw new Error(`Failed to load team quota: ${quotaCycle.error.message}`);
     }
+
+    const quotaRow = Array.isArray(quotaCycle.data)
+      ? (quotaCycle.data[0] as Record<string, unknown> | undefined)
+      : (quotaCycle.data as Record<string, unknown> | undefined);
+
+    const runsUsed = Number(quotaRow?.runs_used ?? 0);
+    const runsRemaining = Math.max(0, runLimit - runsUsed);
+    const resetDate = String(quotaRow?.reset_at ?? buildNextResetDate(null));
+
+    return {
+      userId: user.id,
+      orgId: null,
+      teamId: String(teamMembership.data.team_id),
+      plan: teamPlan,
+      scopeType: "team",
+      scopeId: String(teamMembership.data.team_id),
+      runLimit,
+      runsUsed,
+      runsRemaining,
+      runNumber: runsUsed,
+      resetDate,
+      accountManagerWebhook: null,
+      warning: runsRemaining > 0 && runsRemaining <= 25 ? `Your team has ${runsRemaining} shared test runs left this cycle.` : null,
+      exhaustedMessage:
+        runsRemaining === 0
+          ? `Your team has used all ${runLimit} shared performance test runs. The quota resets on ${new Date(resetDate).toLocaleDateString("en-IN")}.`
+          : null,
+      ctaLabel: teamPlan === "pro" ? "Upgrade to Enterprise" : null,
+      softAlertNeeded: false,
+      hardAlertNeeded: false,
+      teamRole: (teamMembership.data.role as "owner" | "admin" | "member") ?? null,
+    };
   }
 
   const config = resolveQuotaConfig(user, profile);
@@ -443,7 +368,7 @@ async function sendQuotaAlert(baseUrl: string, path: string, payload: Record<str
 }
 
 export async function reservePerformanceRun(adminClient: AdminClient, user: User): Promise<PerformanceQuotaState> {
-  const profile = await loadPerformanceProfile(adminClient, user);
+  const profile = await ensureUserProfile(adminClient, user);
   const teamMembership = await adminClient
     .from("team_members")
     .select("team_id, role, teams!inner(id, plan, deleted_at)")
@@ -451,10 +376,6 @@ export async function reservePerformanceRun(adminClient: AdminClient, user: User
     .eq("status", "active")
     .is("teams.deleted_at", null)
     .maybeSingle();
-
-  if (teamMembership.error && !isMissingRelationError(teamMembership.error.message)) {
-    throw new Error(`Failed to load team membership: ${teamMembership.error.message}`);
-  }
 
   if (!teamMembership.error && teamMembership.data?.team_id) {
     const teamPlan = normalizePlan((teamMembership.data.teams as { plan?: string | null })?.plan);
@@ -464,47 +385,45 @@ export async function reservePerformanceRun(adminClient: AdminClient, user: User
     });
 
     if (reservation.error) {
-      if (!isMissingRelationError(reservation.error.message)) {
-        throw new Error(`Failed to reserve team quota run: ${reservation.error.message}`);
-      }
-    } else {
-      const row = Array.isArray(reservation.data)
-        ? (reservation.data[0] as Record<string, unknown> | undefined)
-        : (reservation.data as Record<string, unknown> | undefined);
-
-      if (!row) {
-        throw new Error("Team quota reservation returned no data");
-      }
-
-      const runLimit = Number(row.run_limit ?? (teamPlan === "enterprise" ? 950 : 500));
-      const runsUsed = Number(row.runs_used ?? 0);
-      const runsRemaining = Math.max(0, Number(row.runs_remaining ?? 0));
-      const resetDate = String(row.reset_at ?? buildNextResetDate(null));
-
-      return {
-        userId: user.id,
-        orgId: null,
-        teamId: String(teamMembership.data.team_id),
-        plan: teamPlan,
-        scopeType: "team",
-        scopeId: String(teamMembership.data.team_id),
-        runLimit,
-        runsUsed,
-        runsRemaining,
-        runNumber: runsUsed,
-        resetDate,
-        accountManagerWebhook: null,
-        warning: runsRemaining > 0 && runsRemaining <= 25 ? `Your team has ${runsRemaining} shared test runs left this cycle.` : null,
-        exhaustedMessage:
-          row.success === false
-            ? `Your team has used all ${runLimit} shared performance test runs. The quota resets on ${new Date(resetDate).toLocaleDateString("en-IN")}.`
-            : null,
-        ctaLabel: teamPlan === "pro" && row.success === false ? "Upgrade to Enterprise" : null,
-        softAlertNeeded: false,
-        hardAlertNeeded: false,
-        teamRole: (teamMembership.data.role as "owner" | "admin" | "member") ?? null,
-      };
+      throw new Error(`Failed to reserve team quota run: ${reservation.error.message}`);
     }
+
+    const row = Array.isArray(reservation.data)
+      ? (reservation.data[0] as Record<string, unknown> | undefined)
+      : (reservation.data as Record<string, unknown> | undefined);
+
+    if (!row) {
+      throw new Error("Team quota reservation returned no data");
+    }
+
+    const runLimit = Number(row.run_limit ?? (teamPlan === "enterprise" ? 950 : 500));
+    const runsUsed = Number(row.runs_used ?? 0);
+    const runsRemaining = Math.max(0, Number(row.runs_remaining ?? 0));
+    const resetDate = String(row.reset_at ?? buildNextResetDate(null));
+
+    return {
+      userId: user.id,
+      orgId: null,
+      teamId: String(teamMembership.data.team_id),
+      plan: teamPlan,
+      scopeType: "team",
+      scopeId: String(teamMembership.data.team_id),
+      runLimit,
+      runsUsed,
+      runsRemaining,
+      runNumber: runsUsed,
+      resetDate,
+      accountManagerWebhook: null,
+      warning: runsRemaining > 0 && runsRemaining <= 25 ? `Your team has ${runsRemaining} shared test runs left this cycle.` : null,
+      exhaustedMessage:
+        row.success === false
+          ? `Your team has used all ${runLimit} shared performance test runs. The quota resets on ${new Date(resetDate).toLocaleDateString("en-IN")}.`
+          : null,
+      ctaLabel: teamPlan === "pro" && row.success === false ? "Upgrade to Enterprise" : null,
+      softAlertNeeded: false,
+      hardAlertNeeded: false,
+      teamRole: (teamMembership.data.role as "owner" | "admin" | "member") ?? null,
+    };
   }
 
   const config = resolveQuotaConfig(user, profile);
@@ -592,7 +511,6 @@ export async function logPerformanceRun(
   adminClient: AdminClient,
   quota: PerformanceQuotaState,
   params: {
-    testRunId?: string | null;
     testType: string;
     durationMs: number;
     status: "completed" | "failed";
@@ -619,7 +537,6 @@ export async function logPerformanceRun(
     actor_user_id: quota.userId,
     plan: quota.plan,
     run_number: quota.runNumber,
-    test_run_id: params.testRunId ?? null,
     test_type: params.testType,
     duration_ms: Math.max(0, Math.round(params.durationMs)),
     result_summary: resultSummary,
