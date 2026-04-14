@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { loadPerformanceProfile } from "../_shared/performance-run-quota.ts";
 import { getCorsHeaders } from "../_shared/cors.ts";
 
 const encoder = new TextEncoder();
@@ -75,11 +76,7 @@ serve(async (req) => {
       const poll = async () => {
         while (!closed) {
           const [profileRes, topupRes, txRes, paymentRes] = await Promise.all([
-            admin
-              .from("user_profiles")
-              .select("token_balance, lifetime_tokens_used")
-              .eq("id", user.id)
-              .limit(1),
+            loadPerformanceProfile(admin as never, user),
             admin
               .from("topup_records")
               .select("id, created_at")
@@ -100,9 +97,9 @@ serve(async (req) => {
               .limit(1),
           ]);
 
-          const profile = (profileRes.data?.[0] as { token_balance?: number; lifetime_tokens_used?: number } | undefined) ?? {};
-          const currentBalance = Number(profile.token_balance ?? 0);
-          const currentLifetime = Number(profile.lifetime_tokens_used ?? 0);
+          const profile = profileRes as { token_balance?: number; lifetime_tokens_used?: number; available?: boolean } | null;
+          const currentBalance = Number(profile?.token_balance ?? 0);
+          const currentLifetime = Number(profile?.lifetime_tokens_used ?? 0);
           const currentTopupId = (topupRes.data?.[0] as { id?: string } | undefined)?.id ?? null;
           const txRow =
             (txRes.data?.[0] as {

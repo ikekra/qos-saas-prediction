@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getPerformanceQuotaState, logPerformanceRun, reservePerformanceRun } from "../_shared/performance-run-quota.ts";
+import { getPerformanceQuotaState, loadPerformanceProfile, logPerformanceRun, reservePerformanceRun } from "../_shared/performance-run-quota.ts";
 import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 
 const clamp = (value: number, min: number, max: number) =>
@@ -90,18 +90,21 @@ const rollbackReservedResources = async (params: {
   userId: string;
   originalBalance: number;
   originalLifetimeUsed: number;
+  profileTableAvailable: boolean;
   quota?: { scopeType: string; scopeId: string } | null;
 }) => {
-  const profileRollback = await params.adminClient
-    .from("user_profiles")
-    .update({
-      token_balance: params.originalBalance,
-      lifetime_tokens_used: params.originalLifetimeUsed,
-    })
-    .eq("id", params.userId);
+  if (params.profileTableAvailable) {
+    const profileRollback = await params.adminClient
+      .from("user_profiles")
+      .update({
+        token_balance: params.originalBalance,
+        lifetime_tokens_used: params.originalLifetimeUsed,
+      })
+      .eq("id", params.userId);
 
-  if (profileRollback.error) {
-    console.error("Failed to rollback token reservation", profileRollback.error);
+    if (profileRollback.error) {
+      console.error("Failed to rollback token reservation", profileRollback.error);
+    }
   }
 
   if (params.quota) {
@@ -190,21 +193,9 @@ serve(async (req) => {
     const cacheThreshold = new Date(Date.now() - cacheTtlSeconds * 1000).toISOString();
 
     const quotaPreview = await getPerformanceQuotaState(adminClient as never, user);
-
-    const profileSelect = await adminClient
-      .from("user_profiles")
-      .select("token_balance, lifetime_tokens_used")
-      .eq("id", user.id)
-      .limit(1);
-
-    if (profileSelect.error) {
-      throw new Error(`Failed to load user profile: ${profileSelect.error.message}`);
-    }
-
-    const profile = profileSelect.data?.[0] ?? {
-      token_balance: 0,
-      lifetime_tokens_used: 0,
-    };
+    const profile = await loadPerformanceProfile(adminClient as never, user);
+    const profileTableAvailable = Boolean(profile.available);
+    const tokenAccountingEnabled = profileTableAvailable;
 
     const cachedLookup = await adminClient
       .from("tests")
@@ -252,7 +243,7 @@ serve(async (req) => {
 
     const currentBalance = Number(profile.token_balance ?? 0);
     const lifetimeUsedBefore = Number(profile.lifetime_tokens_used ?? 0);
-    if (currentBalance < estimatedTokens) {
+    if (tokenAccountingEnabled && currentBalance < estimatedTokens) {
       return jsonResponse({
         error: "Insufficient tokens",
         balance: currentBalance,
@@ -269,30 +260,34 @@ serve(async (req) => {
       }, 429, req);
     }
 
-    const reserveUpdate = await adminClient
-      .from("user_profiles")
-      .update({ token_balance: round2(currentBalance - estimatedTokens) })
-      .eq("id", user.id)
-      .gte("token_balance", estimatedTokens)
-      .select("token_balance")
-      .limit(1);
+    let reservedBalance = currentBalance;
+    if (tokenAccountingEnabled) {
+      const reserveUpdate = await adminClient
+        .from("user_profiles")
+        .update({ token_balance: round2(currentBalance - estimatedTokens) })
+        .eq("id", user.id)
+        .gte("token_balance", estimatedTokens)
+        .select("token_balance")
+        .limit(1);
 
-    if (reserveUpdate.error) {
-      await rollbackReservedResources({
-        adminClient,
-        userId: user.id,
-        originalBalance: currentBalance,
-        originalLifetimeUsed: lifetimeUsedBefore,
-        quota,
-      });
+      if (reserveUpdate.error) {
+        await rollbackReservedResources({
+          adminClient,
+          userId: user.id,
+          originalBalance: currentBalance,
+          originalLifetimeUsed: lifetimeUsedBefore,
+          profileTableAvailable,
+          quota,
+        });
 
-      return jsonResponse({
-        error: "Failed to reserve tokens",
-        details: reserveUpdate.error.message,
-      }, 409, req);
+        return jsonResponse({
+          error: "Failed to reserve tokens",
+          details: reserveUpdate.error.message,
+        }, 409, req);
+      }
+
+      reservedBalance = Number((reserveUpdate.data?.[0] as { token_balance?: number } | undefined)?.token_balance ?? 0);
     }
-
-    const reservedBalance = Number((reserveUpdate.data?.[0] as { token_balance?: number } | undefined)?.token_balance ?? 0);
     let refundedTokens = 0;
     let finalDeductedTokens = estimatedTokens;
     let runStatus: "completed" | "failed" = "completed";
@@ -382,7 +377,7 @@ serve(async (req) => {
       refundedTokens = round2(Math.max(0, estimatedTokens - finalDeductedTokens));
     }
 
-    if (refundedTokens > 0) {
+    if (tokenAccountingEnabled && refundedTokens > 0) {
       const refundTarget = round2(reservedBalance + refundedTokens);
       const refundUpdate = await adminClient
         .from("user_profiles")
@@ -399,43 +394,47 @@ serve(async (req) => {
     const finalBalance = round2(reservedBalance + refundedTokens);
     const lifetimeUsedAfter = round2(lifetimeUsedBefore + finalDeductedTokens);
 
-    const profileFinalize = await adminClient
-      .from("user_profiles")
-      .update({
-        token_balance: finalBalance,
-        lifetime_tokens_used: lifetimeUsedAfter,
-      })
-      .eq("id", user.id);
+    if (tokenAccountingEnabled) {
+      const profileFinalize = await adminClient
+        .from("user_profiles")
+        .update({
+          token_balance: finalBalance,
+          lifetime_tokens_used: lifetimeUsedAfter,
+        })
+        .eq("id", user.id);
 
-    if (profileFinalize.error) {
-      console.error("Failed to finalize profile token counters", profileFinalize.error);
+      if (profileFinalize.error) {
+        console.error("Failed to finalize profile token counters", profileFinalize.error);
+      }
     }
 
-    const txInsert = await adminClient.from("token_transactions").insert([
-      {
-        user_id: user.id,
-        type: "debit",
-        amount: finalDeductedTokens,
-        balance_after: finalBalance,
-        description: `QoS ${normalizedTestType} test`,
-        endpoint: normalizedServiceUrl,
-      },
-      ...(refundedTokens > 0
-        ? [
-            {
-              user_id: user.id,
-              type: "credit",
-              amount: refundedTokens,
-              balance_after: finalBalance,
-              description: `QoS ${normalizedTestType} refund`,
-              endpoint: normalizedServiceUrl,
-            },
-          ]
-        : []),
-    ]);
+    if (tokenAccountingEnabled) {
+      const txInsert = await adminClient.from("token_transactions").insert([
+        {
+          user_id: user.id,
+          type: "debit",
+          amount: finalDeductedTokens,
+          balance_after: finalBalance,
+          description: `QoS ${normalizedTestType} test`,
+          endpoint: normalizedServiceUrl,
+        },
+        ...(refundedTokens > 0
+          ? [
+              {
+                user_id: user.id,
+                type: "credit",
+                amount: refundedTokens,
+                balance_after: finalBalance,
+                description: `QoS ${normalizedTestType} refund`,
+                endpoint: normalizedServiceUrl,
+              },
+            ]
+          : []),
+      ]);
 
-    if (txInsert.error) {
-      console.error("Token transaction logging failed", txInsert.error);
+      if (txInsert.error) {
+        console.error("Token transaction logging failed", txInsert.error);
+      }
     }
 
     const { data: testRecord, error: insertError } = await adminClient
@@ -454,16 +453,17 @@ serve(async (req) => {
       .select()
       .single();
 
-    if (insertError) {
-      console.error("Database error:", insertError);
-      await rollbackReservedResources({
-        adminClient,
-        userId: user.id,
-        originalBalance: currentBalance,
-        originalLifetimeUsed: lifetimeUsedBefore,
-        quota,
-      });
-      return jsonResponse({
+      if (insertError) {
+        console.error("Database error:", insertError);
+        await rollbackReservedResources({
+          adminClient,
+          userId: user.id,
+          originalBalance: currentBalance,
+          originalLifetimeUsed: lifetimeUsedBefore,
+          profileTableAvailable,
+          quota,
+        });
+        return jsonResponse({
         error: "Failed to store test results",
         details: insertError.message,
       }, 500, req);

@@ -19,6 +19,11 @@ type ProfileRow = {
   account_manager_webhook?: string | null;
 };
 
+type ProfileSnapshot = ProfileRow & {
+  available: boolean;
+  source: "user_profiles" | "token_transactions" | "default";
+};
+
 const isMissingRelationError = (message?: string | null) => {
   const normalized = String(message ?? "").toLowerCase();
   return (
@@ -156,47 +161,101 @@ const summarizeResult = (params: {
   return parts.length ? parts.join(", ") : "completed";
 };
 
-async function ensureUserProfile(adminClient: AdminClient, user: User): Promise<ProfileRow> {
+export async function loadPerformanceProfile(adminClient: AdminClient, user: User): Promise<ProfileSnapshot> {
+  const defaultReset = buildNextResetDate(null);
+  const defaultProfile: ProfileSnapshot = {
+    token_balance: 0,
+    lifetime_tokens_used: 0,
+    email: user.email ?? `${user.id}@local.user`,
+    performance_plan: "standard",
+    performance_cycle_reset_at: defaultReset,
+    available: false,
+    source: "default",
+  };
+
   const profileSelect = await adminClient
     .from("user_profiles")
     .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
     .eq("id", user.id)
     .limit(1);
 
-  if (profileSelect.error) {
+  if (!profileSelect.error) {
+    const existing = profileSelect.data?.[0] as ProfileRow | undefined;
+    if (existing) {
+      return {
+        ...defaultProfile,
+        ...existing,
+        available: true,
+        source: "user_profiles",
+      };
+    }
+
+    const profileCreate = await adminClient
+      .from("user_profiles")
+      .upsert(
+        {
+          id: user.id,
+          email: user.email ?? `${user.id}@local.user`,
+          token_balance: 0,
+          lifetime_tokens_used: 0,
+          performance_plan: "standard",
+          performance_cycle_reset_at: defaultReset,
+        },
+        { onConflict: "id" },
+      )
+      .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
+      .limit(1);
+
+    if (!profileCreate.error) {
+      return {
+        ...defaultProfile,
+        ...(profileCreate.data?.[0] as ProfileRow | undefined),
+        available: true,
+        source: "user_profiles",
+      };
+    }
+
+    if (!isMissingRelationError(profileCreate.error.message)) {
+      throw new Error(`Failed to initialize profile: ${profileCreate.error.message}`);
+    }
+  } else if (!isMissingRelationError(profileSelect.error.message)) {
     throw new Error(`Failed to load user profile: ${profileSelect.error.message}`);
   }
 
-  const existing = profileSelect.data?.[0] as ProfileRow | undefined;
-  if (existing) return existing;
+  const [tokenBalanceResult, subscriptionResult] = await Promise.all([
+    adminClient
+      .from("token_transactions")
+      .select("balance_after, created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(1),
+    adminClient
+      .from("subscriptions")
+      .select("plan, current_period_end")
+      .eq("user_id", user.id)
+      .in("status", ["active", "trialing", "past_due"])
+      .order("current_period_end", { ascending: false })
+      .limit(1),
+  ]);
 
-  const defaultReset = buildNextResetDate(null);
-  const profileCreate = await adminClient
-    .from("user_profiles")
-    .upsert(
-      {
-        id: user.id,
-        email: user.email ?? `${user.id}@local.user`,
-        token_balance: 0,
-        lifetime_tokens_used: 0,
-        performance_plan: "standard",
-        performance_cycle_reset_at: defaultReset,
-      },
-      { onConflict: "id" },
-    )
-    .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
-    .limit(1);
+  const balanceRow = tokenBalanceResult.error || isMissingRelationError(tokenBalanceResult.error?.message)
+    ? null
+    : (tokenBalanceResult.data?.[0] as { balance_after?: number | null } | undefined) ?? null;
+  const subscriptionRow = subscriptionResult.error || isMissingRelationError(subscriptionResult.error?.message)
+    ? null
+    : (subscriptionResult.data?.[0] as { plan?: string | null; current_period_end?: string | null } | undefined) ?? null;
 
-  if (profileCreate.error) {
-    throw new Error(`Failed to initialize profile: ${profileCreate.error.message}`);
-  }
+  const inferredPlan = normalizePlan(subscriptionRow?.plan ?? defaultProfile.performance_plan);
+  const inferredReset = buildNextResetDate(subscriptionRow?.current_period_end ?? null);
 
-  return (profileCreate.data?.[0] as ProfileRow | undefined) ?? {
-    token_balance: 0,
-    lifetime_tokens_used: 0,
-    email: user.email ?? `${user.id}@local.user`,
-    performance_plan: "standard",
-    performance_cycle_reset_at: defaultReset,
+  return {
+    ...defaultProfile,
+    token_balance: Number(balanceRow?.balance_after ?? 0),
+    performance_plan: inferredPlan,
+    performance_run_limit: normalizeLimit(inferredPlan, null),
+    performance_cycle_reset_at: inferredReset,
+    available: false,
+    source: tokenBalanceResult.error || subscriptionResult.error ? "default" : "token_transactions",
   };
 }
 
@@ -223,7 +282,7 @@ function resolveQuotaConfig(user: User, profile: ProfileRow) {
 }
 
 export async function getPerformanceQuotaState(adminClient: AdminClient, user: User): Promise<PerformanceQuotaState> {
-  const profile = await ensureUserProfile(adminClient, user);
+  const profile = await loadPerformanceProfile(adminClient, user);
   const teamMembership = await adminClient
     .from("team_members")
     .select("team_id, role, status, teams!inner(id, plan, max_members, deleted_at)")
@@ -384,7 +443,7 @@ async function sendQuotaAlert(baseUrl: string, path: string, payload: Record<str
 }
 
 export async function reservePerformanceRun(adminClient: AdminClient, user: User): Promise<PerformanceQuotaState> {
-  const profile = await ensureUserProfile(adminClient, user);
+  const profile = await loadPerformanceProfile(adminClient, user);
   const teamMembership = await adminClient
     .from("team_members")
     .select("team_id, role, teams!inner(id, plan, deleted_at)")
