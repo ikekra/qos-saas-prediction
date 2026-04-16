@@ -1,28 +1,30 @@
 ﻿import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getPerformanceQuotaState, logPerformanceRun, reservePerformanceRun } from "../_shared/performance-run-quota.ts";
+import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': (Deno.env.get('ALLOWED_ORIGINS') ?? 'http://localhost:5173').split(',')[0].trim(),
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
+const corsHeaders = getCorsHeaders();
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
 const computePredictedEfficiency = (params: {
   latency: number;
-  throughput: number;
+  throughput: number | null | undefined;
   availability: number;
   reliability: number;
 }) => {
   const latencyScore = clamp(100 - params.latency / 10, 0, 100);
-  const throughputScore = clamp(params.throughput, 0, 100);
-  const score =
-    params.availability * 0.35 +
-    params.reliability * 0.35 +
-    latencyScore * 0.2 +
-    throughputScore * 0.1;
+  const hasThroughput = typeof params.throughput === 'number' && Number.isFinite(params.throughput);
+  const throughputScore = hasThroughput ? clamp(Number(params.throughput), 0, 100) : null;
+  const score = hasThroughput
+    ? params.availability * 0.35 +
+      params.reliability * 0.35 +
+      latencyScore * 0.2 +
+      (throughputScore ?? 0) * 0.1
+    : params.availability * 0.4 +
+      params.reliability * 0.35 +
+      latencyScore * 0.25;
 
   return Number(clamp(score, 0, 100).toFixed(2));
 };
@@ -79,7 +81,7 @@ const computeTokenCost = (params: { testType: string; isScheduled: boolean; batc
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { headers: getCorsHeaders(req) });
   }
 
   try {
@@ -105,10 +107,7 @@ serve(async (req) => {
     } = await authClient.auth.getUser();
 
     if (authError || !user) {
-      return new Response(
-        JSON.stringify({ error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ error: 'Unauthorized' }, 401, req);
     }
 
     const {
@@ -120,10 +119,7 @@ serve(async (req) => {
     } = await req.json();
 
     if (!serviceUrl || !testType) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required parameters' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return jsonResponse({ error: 'Missing required parameters' }, 400, req);
     }
 
     console.log(`Running ${testType} test for ${serviceUrl}`);
@@ -152,19 +148,24 @@ serve(async (req) => {
       lifetime_tokens_used: 0,
     };
 
-    const cachedLookup = await adminClient
-      .from('tests')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('service_url', serviceUrl)
-      .eq('test_type', testType)
-      .eq('status', 'completed')
-      .gte('created_at', cacheThreshold)
-      .order('created_at', { ascending: false })
-      .limit(1);
+    let cachedLookup: Awaited<ReturnType<typeof adminClient.from>> | null = null;
+    try {
+      cachedLookup = await adminClient
+        .from('tests')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('service_url', serviceUrl)
+        .eq('test_type', testType)
+        .eq('status', 'completed')
+        .gte('created_at', cacheThreshold)
+        .order('created_at', { ascending: false })
+        .limit(1);
+    } catch (error) {
+      console.warn('Skipping cached test lookup because tests schema is unavailable:', error);
+    }
 
-    const cachedTest = cachedLookup.data?.[0] ?? null;
-    if (!forceFresh && !cachedLookup.error && cachedTest) {
+    const cachedTest = cachedLookup?.data?.[0] ?? null;
+    if (!forceFresh && cachedLookup && !cachedLookup.error && cachedTest) {
       return new Response(
         JSON.stringify({
           success: true,
@@ -206,7 +207,7 @@ serve(async (req) => {
           },
         }),
         {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          headers: getCorsHeaders(req),
         }
       );
     }
@@ -220,7 +221,7 @@ serve(async (req) => {
           balance: currentBalance,
           required: estimatedTokens,
         }),
-        { status: 402, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 402, headers: getCorsHeaders(req) }
       );
     }
 
@@ -242,7 +243,7 @@ serve(async (req) => {
             orgId: quota.orgId,
           },
         }),
-        { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 429, headers: getCorsHeaders(req) }
       );
     }
 
@@ -264,7 +265,7 @@ serve(async (req) => {
           error: 'Failed to reserve tokens',
           details: reserveUpdate.error.message,
         }),
-        { status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 409, headers: getCorsHeaders(req) }
       );
     }
 
@@ -303,14 +304,17 @@ serve(async (req) => {
         testResults.latency = latency;
         testResults.uptime = response.ok ? 100 : 0;
         testResults.success_rate = response.ok ? 100 : 0;
+        testResults.throughput = response.ok ? round2(1000 / Math.max(1, latency)) : 0; // req/s
 
-        // For throughput, estimate based on response size
+        // For throughput test, enrich with a payload-size signal while keeping req/s as primary.
         if (testType === 'throughput') {
           const responseText = await response.text();
           const sizeInBytes = new TextEncoder().encode(responseText).length;
           const sizeInKB = sizeInBytes / 1024;
           const timeInSeconds = latency / 1000;
-          testResults.throughput = timeInSeconds > 0 ? sizeInKB / timeInSeconds : 0; // KB/s
+          const payloadRate = timeInSeconds > 0 ? sizeInKB / timeInSeconds : 0; // KB/s
+          const reqPerSec = round2(1000 / Math.max(1, latency));
+          testResults.throughput = round2((reqPerSec + clamp(payloadRate, 0, 200)) / 2);
         }
       }
 
@@ -324,6 +328,7 @@ serve(async (req) => {
         testResults.latency = Date.now() - startTime;
         testResults.uptime = response.ok ? 100 : 0;
         testResults.success_rate = response.ok ? 100 : 0;
+        testResults.throughput = response.ok ? round2(1000 / Math.max(1, testResults.latency)) : 0;
       }
 
     } catch (error) {
@@ -331,6 +336,7 @@ serve(async (req) => {
       testResults.uptime = 0;
       testResults.success_rate = 0;
       testResults.latency = Date.now() - startTime;
+      testResults.throughput = 0;
       runStatus = 'failed';
       runErrorMessage = error instanceof Error ? error.message : 'Unknown test failure';
     }
@@ -415,25 +421,31 @@ serve(async (req) => {
     }
 
     // Store test results in database
-    const { data: testRecord, error: insertError } = await adminClient
-      .from('tests')
-      .insert({
-        user_id: user.id,
-        service_url: serviceUrl,
-        test_type: testType,
-        latency: testResults.latency,
-        uptime: testResults.uptime,
-        throughput: testResults.throughput,
-        success_rate: testResults.success_rate,
-        status: runStatus,
-        error_message: runErrorMessage,
-      })
-      .select()
-      .single();
+    let testRecord: Record<string, unknown> | null = null;
+    try {
+      const { data, error: insertError } = await adminClient
+        .from('tests')
+        .insert({
+          user_id: user.id,
+          service_url: serviceUrl,
+          test_type: testType,
+          latency: testResults.latency,
+          uptime: testResults.uptime,
+          throughput: testResults.throughput,
+          success_rate: testResults.success_rate,
+          status: runStatus,
+          error_message: runErrorMessage,
+        })
+        .select()
+        .single();
 
-    if (insertError) {
-      console.error('Database error:', insertError);
-      throw insertError;
+      if (insertError) {
+        console.error('Database error:', insertError);
+      } else {
+        testRecord = (data as Record<string, unknown> | null) ?? null;
+      }
+    } catch (error) {
+      console.error('Test record insert skipped because tests schema is unavailable:', error);
     }
 
     const predictedEfficiency = computePredictedEfficiency({
@@ -443,42 +455,55 @@ serve(async (req) => {
       reliability: testResults.success_rate ?? 0,
     });
 
-    const { data: matchedService } = await adminClient
-      .from('web_services')
-      .select('id')
-      .or(`base_url.eq.${serviceUrl},docs_url.eq.${serviceUrl}`)
-      .maybeSingle();
+    let matchedService: { id?: string } | null = null;
+    try {
+      const { data } = await adminClient
+        .from('web_services')
+        .select('id')
+        .or(`base_url.eq.${serviceUrl},docs_url.eq.${serviceUrl}`)
+        .maybeSingle();
+      matchedService = (data as { id?: string } | null) ?? null;
+    } catch (error) {
+      console.warn('Skipping service linkage because web_services schema is unavailable:', error);
+    }
 
-    const { error: predictionInsertError } = await adminClient
-      .from('qos_predictions')
-      .insert({
-        user_id: user.id,
-        service_id: matchedService?.id ?? null,
-        latency: testResults.latency ?? 0,
-        throughput: testResults.throughput ?? 0,
-        availability: testResults.uptime ?? 0,
-        reliability: testResults.success_rate ?? 0,
-        response_time: testResults.latency ?? 0,
-        predicted_efficiency: predictedEfficiency,
-      });
+    try {
+      const { error: predictionInsertError } = await adminClient
+        .from('qos_predictions')
+        .insert({
+          user_id: user.id,
+          service_id: matchedService?.id ?? null,
+          latency: testResults.latency ?? 0,
+          throughput: testResults.throughput ?? 0,
+          availability: testResults.uptime ?? 0,
+          reliability: testResults.success_rate ?? 0,
+          response_time: testResults.latency ?? 0,
+          predicted_efficiency: predictedEfficiency,
+        });
 
-    if (predictionInsertError) {
-      console.error('qos_predictions insert error:', predictionInsertError);
-      throw predictionInsertError;
+      if (predictionInsertError) {
+        console.error('qos_predictions insert error:', predictionInsertError);
+      }
+    } catch (error) {
+      console.warn('Skipping qos_predictions write because the schema is unavailable:', error);
     }
 
     if (matchedService?.id) {
-      const { error: serviceUpdateError } = await adminClient
-        .from('web_services')
-        .update({
-          avg_latency: testResults.latency ?? 0,
-          availability_score: testResults.uptime ?? 0,
-          reliability_score: testResults.success_rate ?? 0,
-        })
-        .eq('id', matchedService.id);
+      try {
+        const { error: serviceUpdateError } = await adminClient
+          .from('web_services')
+          .update({
+            avg_latency: testResults.latency ?? 0,
+            availability_score: testResults.uptime ?? 0,
+            reliability_score: testResults.success_rate ?? 0,
+          })
+          .eq('id', matchedService.id);
 
-      if (serviceUpdateError) {
-        console.error('web_services update error:', serviceUpdateError);
+        if (serviceUpdateError) {
+          console.error('web_services update error:', serviceUpdateError);
+        }
+      } catch (error) {
+        console.warn('Skipping web_services update because the schema is unavailable:', error);
       }
     }
 
@@ -526,7 +551,7 @@ serve(async (req) => {
         },
       }),
       {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: getCorsHeaders(req),
       }
     );
 
@@ -537,7 +562,7 @@ serve(async (req) => {
       JSON.stringify({ error: errorMessage }),
       {
         status: 500,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: getCorsHeaders(req),
       }
     );
   }

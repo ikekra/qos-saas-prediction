@@ -8,12 +8,15 @@ Use this as the release runbook for production rollout.
 - [x] CI workflow added: `.github/workflows/quality-gate.yml` (`lint + build`)
 
 ## 1) Database (Supabase)
-- [ ] Apply pending migration: `20260319090000_web_services_ratings_favorites.sql`
 - [ ] Run `npx supabase db push` against production project
-- [ ] Verify tables/policies exist for ratings and favorites
+- [ ] Confirm latest migrations applied through `20260416120000_fix_performance_quota_scope_ambiguity.sql`
+- [ ] Verify `public.web_services`, `public.user_profiles`, `public.teams`, `public.team_members`, and `public.team_invitations` exist
+- [ ] Verify team quota/activity objects exist: `public.quota_usage`, `public.team_activity_logs`, `public.team_quota_overview`, `public.team_member_usage_breakdown`
 
 ## 2) Edge Functions Deploy
+- [ ] Deploy `team-api`
 - [ ] Deploy `create-web-service`
+- [ ] Deploy `admin-web-services`
 - [ ] Deploy `run-qos-test`
 - [ ] Deploy `compare-services`
 - [ ] Deploy `test-service`
@@ -23,8 +26,10 @@ Use this as the release runbook for production rollout.
 - [ ] Deploy `payments-create-order`
 - [ ] Deploy `payments-verify`
 - [ ] Deploy `payments-webhook`
+- [ ] Deploy `admin-control-plane`
 - [ ] Deploy `predict-qos`
 - [ ] Deploy `seed-services` (optional)
+- [ ] Deploy `sync-publicapis` (if using directory sync)
 
 ## 3) Edge Function Environment Variables (production)
 - [ ] `SUPABASE_URL`
@@ -56,7 +61,10 @@ Use this as the release runbook for production rollout.
 
 ## 6) Smoke Tests (staging or production)
 - [ ] Register/Login works and dashboard loads
+- [ ] Pro user can create team in `/team`
+- [ ] Standard user is blocked from team creation with clear upgrade message
 - [ ] Add a new service (validates `create-web-service`)
+- [ ] Add/update service in `/admin/web-services` (validates admin + schema fallback behavior)
 - [ ] Run QoS test and verify `tests` row updates
 - [ ] Compare services and verify metrics render
 - [ ] QoS Reports shows realtime connected status
@@ -76,6 +84,7 @@ Use this as the release runbook for production rollout.
 ```powershell
 cd "c:\Users\Asus\Desktop\saas-qos\New folder\source\src"
 npm.cmd run check
+npm.cmd run backend:deploy
 npx supabase db push
 npx supabase functions deploy run-qos-test
 ```

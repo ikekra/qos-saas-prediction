@@ -314,16 +314,33 @@ as $$
   select case when p_plan = 'enterprise' then 950 else 500 end
 $$;
 
-create or replace view public.team_member_usage_breakdown as
-select
-  l.team_id,
-  l.actor_user_id as user_id,
-  count(*)::integer as runs_used,
-  max(l.created_at) as last_active_at
-from public.performance_test_run_logs l
-where l.team_id is not null
-  and l.actor_user_id is not null
-group by l.team_id, l.actor_user_id;
+do $$
+begin
+  if to_regclass('public.performance_test_run_logs') is not null then
+    execute $view$
+      create or replace view public.team_member_usage_breakdown as
+      select
+        l.team_id,
+        l.actor_user_id as user_id,
+        count(*)::integer as runs_used,
+        max(l.created_at) as last_active_at
+      from public.performance_test_run_logs l
+      where l.team_id is not null
+        and l.actor_user_id is not null
+      group by l.team_id, l.actor_user_id
+    $view$;
+  else
+    execute $view$
+      create or replace view public.team_member_usage_breakdown as
+      select
+        null::uuid as team_id,
+        null::uuid as user_id,
+        0::integer as runs_used,
+        null::timestamptz as last_active_at
+      where false
+    $view$;
+  end if;
+end $$;
 
 create or replace view public.team_quota_overview as
 select

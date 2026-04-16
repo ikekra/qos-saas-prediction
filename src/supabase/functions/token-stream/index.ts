@@ -3,30 +3,44 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 
 const encoder = new TextEncoder();
 
-const sseHeaders = {
-  "Access-Control-Allow-Origin": (Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173").split(",")[0].trim(),
+const resolveAllowedOrigin = (req?: Request) => {
+  const raw = Deno.env.get("ALLOWED_ORIGINS") ?? "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8080,http://127.0.0.1:8080";
+  const allowed = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (allowed.includes("*")) return "*";
+  const requestOrigin = req?.headers.get("origin")?.trim();
+  if (requestOrigin && allowed.includes(requestOrigin)) return requestOrigin;
+  return requestOrigin ?? allowed[0] ?? "*";
+};
+
+const getSseHeaders = (req?: Request) => ({
+  "Access-Control-Allow-Origin": resolveAllowedOrigin(req),
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET,OPTIONS",
   "Content-Type": "text/event-stream",
   "Cache-Control": "no-cache, no-transform",
   Connection: "keep-alive",
-};
+});
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: sseHeaders });
-  if (req.method !== "GET") return new Response("Method not allowed", { status: 405, headers: sseHeaders });
+  if (req.method === "OPTIONS") return new Response(null, { headers: getSseHeaders(req) });
+  if (req.method !== "GET") return new Response("Method not allowed", { status: 405, headers: getSseHeaders(req) });
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
   const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
   if (!supabaseUrl || !supabaseAnonKey || !serviceRole) {
-    return new Response("Missing environment", { status: 500, headers: sseHeaders });
+    return new Response("Missing environment", { status: 500, headers: getSseHeaders(req) });
   }
 
   const url = new URL(req.url);
   const accessToken = url.searchParams.get("access_token") ?? "";
-  if (!accessToken) return new Response("Missing access token", { status: 401, headers: sseHeaders });
+  if (!accessToken) return new Response("Missing access token", { status: 401, headers: getSseHeaders(req) });
 
   const authClient = createClient(supabaseUrl, supabaseAnonKey, {
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -36,7 +50,7 @@ serve(async (req) => {
     error: authError,
   } = await authClient.auth.getUser();
 
-  if (authError || !user) return new Response("Unauthorized", { status: 401, headers: sseHeaders });
+  if (authError || !user) return new Response("Unauthorized", { status: 401, headers: getSseHeaders(req) });
 
   const admin = createClient(supabaseUrl, serviceRole);
 
@@ -179,6 +193,6 @@ serve(async (req) => {
     },
   });
 
-  return new Response(stream, { headers: sseHeaders });
+  return new Response(stream, { headers: getSseHeaders(req) });
 });
 

@@ -37,6 +37,13 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 
+const fail = (
+  error: string,
+  errorCode: string,
+  status: number,
+  extra: Record<string, unknown> = {},
+) => json({ success: false, error, errorCode, ...extra }, status);
+
 const maxMembersForPlan = (plan: TeamPlan) => (plan === "enterprise" ? 5 : 4);
 const teamRunLimit = (plan: TeamPlan) => (plan === "enterprise" ? 950 : 500);
 
@@ -162,12 +169,43 @@ async function createTeam(context: RequestContext) {
   const name = String(body.name ?? "").trim();
   const slug = slugify(String(body.slug ?? name));
   const avatarUrl = body.avatarUrl ? String(body.avatarUrl) : null;
-  if (!name || !slug) return json({ error: "name and slug are required" }, 400);
+  if (!name || !slug) {
+    return fail("name and slug are required", "TEAM_CREATE_VALIDATION", 400);
+  }
+  if (name.length < 2 || name.length > 100) {
+    return fail("Team name must be between 2 and 100 characters.", "TEAM_NAME_INVALID", 400, {
+      fieldErrors: { name: "Team name must be between 2 and 100 characters." },
+    });
+  }
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) {
+    return fail("Slug must use lowercase letters, numbers, and hyphens only.", "TEAM_SLUG_INVALID", 400, {
+      fieldErrors: { slug: "Slug must use lowercase letters, numbers, and hyphens only." },
+    });
+  }
 
-  const profile = await getUserProfile(context.adminClient, auth.user.id);
-  const plan = normalizeTeamPlan(profile?.performance_plan);
+  const { data: existingMembership } = await context.adminClient
+    .from("team_members")
+    .select("team_id, role, status")
+    .eq("user_id", auth.user.id)
+    .in("status", ["active", "invited"])
+    .limit(1)
+    .maybeSingle();
+
+  if (existingMembership?.team_id) {
+    return fail(
+      "You are already part of a team. Leave your current team before creating a new one.",
+      "TEAM_MEMBERSHIP_CONFLICT",
+      409,
+    );
+  }
+
+  const plan = await resolveEligibleTeamPlan(context.adminClient, auth.user);
   if (!plan) {
-    return json({ error: "Your current plan does not support teams. Upgrade to Pro or Enterprise." }, 403);
+    return fail(
+      "Your current plan does not support teams. Upgrade to Pro or Enterprise.",
+      "TEAM_PLAN_NOT_ELIGIBLE",
+      403,
+    );
   }
 
   const { data: existingOwned } = await context.adminClient
@@ -178,7 +216,7 @@ async function createTeam(context: RequestContext) {
     .limit(1);
 
   if ((existingOwned ?? []).length > 0) {
-    return json({ error: "You already own a team." }, 409);
+    return fail("You already own a team.", "TEAM_OWNER_CONFLICT", 409);
   }
 
   const maxMembers = maxMembersForPlan(plan);
@@ -195,7 +233,14 @@ async function createTeam(context: RequestContext) {
     .select("*")
     .single();
 
-  if (teamError) return json({ error: teamError.message }, 400);
+  if (teamError) {
+    if (String(teamError.code ?? "") === "23505") {
+      return fail("That team slug is already taken. Try a different slug.", "TEAM_SLUG_CONFLICT", 409, {
+        fieldErrors: { slug: "That team slug is already taken. Try a different slug." },
+      });
+    }
+    return fail(teamError.message, "TEAM_CREATE_FAILED", 400);
+  }
 
   const { error: memberError } = await context.adminClient.from("team_members").insert({
     team_id: team.id,
@@ -206,7 +251,11 @@ async function createTeam(context: RequestContext) {
     joined_at: new Date().toISOString(),
   });
 
-  if (memberError) return json({ error: memberError.message }, 400);
+  if (memberError) {
+    // Keep team creation atomic for users: if owner membership fails, rollback team.
+    await context.adminClient.from("teams").delete().eq("id", team.id);
+    return fail(memberError.message, "TEAM_OWNER_MEMBER_CREATE_FAILED", 400);
+  }
 
   await ensureTeamQuota(context.adminClient, team.id, teamRunLimit(plan));
   await logTeamActivity(context.adminClient, team.id, auth.user.id, "team_created", "team", team.id, {
@@ -214,7 +263,7 @@ async function createTeam(context: RequestContext) {
     maxMembers,
   });
 
-  return json({ success: true, team });
+  return json({ success: true, process: "standard-v1", team });
 }
 
 async function getMyTeam(context: RequestContext) {
@@ -230,11 +279,11 @@ async function getMyTeam(context: RequestContext) {
     .maybeSingle();
 
   if (!membership.data?.team_id) {
-    const profile = await getUserProfile(context.adminClient, auth.user.id);
+    const eligiblePlan = (await resolveEligibleTeamPlan(context.adminClient, auth.user)) ?? "standard";
     return json({
       success: true,
       team: null,
-      eligiblePlan: normalizeTeamPlan(profile?.performance_plan) ?? "standard",
+      eligiblePlan,
     });
   }
 
@@ -768,6 +817,72 @@ async function getUserProfile(adminClient: ReturnType<typeof createClient>, user
     .eq("id", userId)
     .maybeSingle();
   return data as { performance_plan?: string | null } | null;
+}
+
+async function resolveEligibleTeamPlan(adminClient: ReturnType<typeof createClient>, user: User) {
+  const profile = await getUserProfile(adminClient, user.id);
+  const profilePlan = normalizeTeamPlan(profile?.performance_plan);
+  if (profilePlan) return profilePlan;
+
+  const metadataPlan = normalizeTeamPlan(
+    String(
+      user.user_metadata?.performance_plan ??
+      user.app_metadata?.performance_plan ??
+      "",
+    ),
+  );
+
+  if (metadataPlan) {
+    // Backfill a missing user_profiles row so future checks are consistent.
+    await adminClient.from("user_profiles").upsert({
+      id: user.id,
+      email: user.email ?? "",
+      performance_plan: metadataPlan,
+    }, { onConflict: "id" });
+    return metadataPlan;
+  }
+
+  const billingPlan = await resolvePlanFromBilling(adminClient, user.id);
+  if (billingPlan) {
+    await adminClient.from("user_profiles").upsert({
+      id: user.id,
+      email: user.email ?? "",
+      performance_plan: billingPlan,
+    }, { onConflict: "id" });
+    return billingPlan;
+  }
+
+  return null;
+}
+
+async function resolvePlanFromBilling(adminClient: ReturnType<typeof createClient>, userId: string) {
+  const { data: subscription } = await adminClient
+    .from("subscriptions")
+    .select("plan, status, updated_at, created_at")
+    .eq("user_id", userId)
+    .in("status", ["active", "trialing", "past_due"])
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const subscriptionPlan = normalizeTeamPlan(String(subscription?.plan ?? ""));
+  if (subscriptionPlan) return subscriptionPlan;
+
+  const { data: payment } = await adminClient
+    .from("payments")
+    .select("plan_name, pack_name, status, created_at")
+    .eq("user_id", userId)
+    .eq("status", "success")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const paymentPlan =
+    normalizeTeamPlan(String(payment?.plan_name ?? "")) ??
+    normalizeTeamPlan(String(payment?.pack_name ?? ""));
+
+  if (paymentPlan) return paymentPlan;
+  return null;
 }
 
 async function ensureTeamQuota(adminClient: ReturnType<typeof createClient>, teamId: string, runLimit: number) {

@@ -38,6 +38,12 @@ type CreditTokensResponse = {
   error?: string;
 };
 
+const normalizeTeamEligiblePlan = (value: unknown): "pro" | "enterprise" | null => {
+  const plan = String(value ?? "").trim().toLowerCase();
+  if (plan === "pro" || plan === "enterprise") return plan;
+  return null;
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
@@ -82,7 +88,7 @@ serve(async (req) => {
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
     const { data: payment, error: paymentError } = await adminClient
       .from("payments")
-      .select("id, user_id, status, tokens_purchased, pack_name, gateway_payment_id")
+      .select("id, user_id, status, tokens_purchased, pack_name, plan_name, gateway_payment_id")
       .eq("gateway_order_id", orderId)
       .maybeSingle();
 
@@ -160,6 +166,21 @@ serve(async (req) => {
       .eq("id", payment.id);
 
     if (updateError) return jsonResponse({ error: "Failed to update payment status", details: updateError.message }, 500);
+
+    const planFromPayment =
+      normalizeTeamEligiblePlan(payment.plan_name) ??
+      normalizeTeamEligiblePlan(payment.pack_name);
+
+    if (planFromPayment) {
+      await adminClient.from("user_profiles").upsert(
+        {
+          id: user.id,
+          email: user.email ?? `${user.id}@local.user`,
+          performance_plan: planFromPayment,
+        },
+        { onConflict: "id" },
+      );
+    }
 
     return jsonResponse({
       success: true,

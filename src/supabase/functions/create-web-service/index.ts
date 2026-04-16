@@ -49,19 +49,51 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
     );
 
-    const { data, error } = await supabaseService
+    const webServicesPayload = {
+      name,
+      service_name: name,
+      provider,
+      category,
+      base_url,
+      description,
+      is_active: true,
+    };
+
+    const legacyServicesPayload = {
+      name,
+      provider,
+      category,
+      base_url,
+      description,
+      created_by: user.id,
+    };
+
+    const isMissingWebServicesSchema = (error: { code?: string; message?: string } | null) => {
+      if (!error) return false;
+      const message = error.message?.toLowerCase() ?? "";
+      return (
+        error.code === "42P01" ||
+        message.includes("web_services") ||
+        message.includes("schema cache") ||
+        message.includes("could not find the")
+      );
+    };
+
+    let result = await supabaseService
       .from("web_services")
-      .insert({
-        name,
-        service_name: name,
-        provider,
-        category,
-        base_url,
-        description,
-        is_active: true,
-      })
+      .insert(webServicesPayload)
       .select()
       .single();
+
+    if (isMissingWebServicesSchema(result.error)) {
+      result = await supabaseService
+        .from("services")
+        .insert(legacyServicesPayload)
+        .select()
+        .single();
+    }
+
+    const { data, error } = result;
 
     if (error) {
       return new Response(JSON.stringify({ error: error.message }), {

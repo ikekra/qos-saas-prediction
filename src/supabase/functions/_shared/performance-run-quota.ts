@@ -11,7 +11,6 @@ type ProfileRow = {
   token_balance?: number | null;
   lifetime_tokens_used?: number | null;
   email?: string | null;
-  organization?: string | null;
   performance_plan?: string | null;
   performance_run_limit?: number | null;
   performance_cycle_reset_at?: string | null;
@@ -149,7 +148,7 @@ const summarizeResult = (params: {
 async function ensureUserProfile(adminClient: AdminClient, user: User): Promise<ProfileRow> {
   const profileSelect = await adminClient
     .from("user_profiles")
-    .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
+    .select("token_balance, lifetime_tokens_used, email, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
     .eq("id", user.id)
     .limit(1);
 
@@ -174,7 +173,7 @@ async function ensureUserProfile(adminClient: AdminClient, user: User): Promise<
       },
       { onConflict: "id" },
     )
-    .select("token_balance, lifetime_tokens_used, email, organization, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
+    .select("token_balance, lifetime_tokens_used, email, performance_plan, performance_run_limit, performance_cycle_reset_at, performance_org_id, account_manager_webhook")
     .limit(1);
 
   if (profileCreate.error) {
@@ -196,7 +195,7 @@ function resolveQuotaConfig(user: User, profile: ProfileRow) {
   const resetDate = buildNextResetDate(profile.performance_cycle_reset_at);
   const orgId =
     plan === "enterprise"
-      ? String(profile.performance_org_id || profile.organization || "").trim() || user.id
+      ? String(profile.performance_org_id || "").trim() || user.id
       : null;
   const scopeType = plan === "enterprise" ? "org" : "user";
   const scopeId = plan === "enterprise" ? (orgId as string) : user.id;

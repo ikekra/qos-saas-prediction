@@ -1,6 +1,7 @@
 # PublicAPIs.io Sync
 
 This sync imports up to 1,500 entries from the PublicAPIs.io directory into `public.web_services` and is safe to run daily.
+It does not use the older `public.services` table.
 
 Dataset source:
 ```
@@ -27,7 +28,7 @@ Option A: Windows Task Scheduler
 1. Create a daily task to run:
    - Program: `node`
    - Arguments: `src/scripts/sync_publicapis.mjs`
-   - Start in: `c:\Users\Asus\Desktop\New folder (2)\New folder\source\src`
+   - Start in: `c:\Users\Asus\Desktop\saas-qos\New folder\source\src`
 
 Option B: Supabase Scheduled Function
 1. Deploy the `sync-publicapis` Edge Function.
@@ -39,3 +40,6 @@ Edge function file:
 ## Notes
 - The parser tries to extract entries from Next.js data, JSON-LD, and HTML fallback.
 - If the directory HTML structure changes, the parser may need adjustments.
+- If you see a schema-cache error, make sure the `public.web_services` migration set is applied, especially:
+  - `src/supabase/migrations/20260228090000_create_web_services.sql`
+  - `src/supabase/migrations/20260301093000_backend_structure.sql`

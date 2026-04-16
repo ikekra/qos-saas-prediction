@@ -77,12 +77,32 @@ const TEST_TYPES: Array<{ value: TestType; label: string; cost: number }> = [
 
 const formatNumber = (value: number) => new Intl.NumberFormat('en-IN').format(Math.round(value));
 
-const qosBand = (score: number) => {
-  if (score >= 85) return { label: 'Excellent', color: 'text-emerald-600' };
-  if (score >= 70) return { label: 'Good', color: 'text-lime-600' };
-  if (score >= 50) return { label: 'Fair', color: 'text-amber-600' };
-  return { label: 'Poor', color: 'text-rose-600' };
+const deriveEfficiencyScore = (results?: RunResult['results']) => {
+  if (!results) return 0;
+
+  const latency = Number(results.latency ?? 0);
+  const hasThroughput = typeof results.throughput === 'number' && Number.isFinite(results.throughput);
+  const throughput = Number(results.throughput ?? 0);
+  const availability = Number(results.uptime ?? 0);
+  const reliability = Number(results.success_rate ?? 0);
+  const latencyScore = Math.max(0, Math.min(100, 100 - latency / 10));
+  const throughputScore = Math.max(0, Math.min(100, throughput));
+  const score = hasThroughput
+    ? availability * 0.35 + reliability * 0.35 + latencyScore * 0.2 + throughputScore * 0.1
+    : availability * 0.4 + reliability * 0.35 + latencyScore * 0.25;
+
+  return Number(Math.max(0, Math.min(100, score)).toFixed(2));
 };
+
+const qosBand = (score: number) => {
+  if (score >= 80) return { label: 'Excellent', color: 'text-emerald-600' };
+  if (score >= 65) return { label: 'Good', color: 'text-lime-600' };
+  if (score >= 45) return { label: 'Fair', color: 'text-amber-600' };
+  return { label: 'Needs Attention', color: 'text-rose-600' };
+};
+
+const formatMetric = (value: number | null | undefined, suffix = '') =>
+  typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value)}${suffix}` : 'N/A';
 
 export default function RunTest() {
   const location = useLocation();
@@ -129,12 +149,16 @@ export default function RunTest() {
   };
 
   const loadRecent = async () => {
-    const { data } = await supabase
-      .from('tests')
-      .select('id, service_url, test_type, created_at, status')
-      .order('created_at', { ascending: false })
-      .limit(6);
-    setRecentTests((data as any) || []);
+    try {
+      const { data } = await supabase
+        .from('tests')
+        .select('id, service_url, test_type, created_at, status')
+        .order('created_at', { ascending: false })
+        .limit(6);
+      setRecentTests((data as any) || []);
+    } catch {
+      setRecentTests([]);
+    }
   };
 
   useEffect(() => {
@@ -144,17 +168,34 @@ export default function RunTest() {
 
   useEffect(() => {
     const initServices = async () => {
-      const { data, error } = await supabase
-        .from('web_services')
-        .select('id, name, base_url, docs_url, is_active')
-        .eq('is_active', true)
-        .order('name', { ascending: true });
-      if (error) return;
-      const options =
-        (data || [])
-          .map((s: any) => ({ id: s.id as string, name: s.name as string, url: (s.base_url || s.docs_url || '') as string }))
-          .filter((s) => Boolean(s.url));
-      setServiceOptions(options);
+      try {
+        const { data, error } = await supabase
+          .from('web_services')
+          .select('id, name, base_url, docs_url, is_active')
+          .eq('is_active', true)
+          .order('name', { ascending: true });
+        if (error) throw error;
+        const options =
+          (data || [])
+            .map((s: any) => ({ id: s.id as string, name: s.name as string, url: (s.base_url || s.docs_url || '') as string }))
+            .filter((s) => Boolean(s.url));
+        setServiceOptions(options);
+      } catch {
+        try {
+          const { data } = await supabase
+            .from('web_services')
+            .select('id, name, base_url, is_active')
+            .eq('is_active', true)
+            .order('name', { ascending: true });
+          const options =
+            (data || [])
+              .map((s: any) => ({ id: s.id as string, name: s.name as string, url: (s.base_url || '') as string }))
+              .filter((s) => Boolean(s.url));
+          setServiceOptions(options);
+        } catch {
+          setServiceOptions([]);
+        }
+      }
     };
     void initServices();
   }, []);
@@ -267,7 +308,7 @@ export default function RunTest() {
     }
   };
 
-  const score = Number(lastResult?.predicted_efficiency ?? 0);
+  const score = Number(lastResult?.predicted_efficiency ?? deriveEfficiencyScore(lastResult?.results));
   const band = qosBand(score);
 
   return (
@@ -475,34 +516,40 @@ export default function RunTest() {
                 <>
                   <div className="flex items-center justify-between">
                     <div>
-                      <p className="text-sm text-muted-foreground">QoS Score</p>
+                      <p className="text-sm text-muted-foreground">Realtime QoS Score</p>
                       <p className={`text-3xl font-bold ${band.color}`}>{Math.round(score)}/100</p>
                     </div>
-                    <Badge variant={lastResult.data?.status === 'completed' ? 'secondary' : 'destructive'}>
-                      {lastResult.data?.status?.toUpperCase() ?? 'UNKNOWN'}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={lastResult.cache?.hit ? 'outline' : 'secondary'}>
+                        {lastResult.cache?.hit ? 'Cached' : 'Realtime'}
+                      </Badge>
+                      <Badge variant={lastResult.data?.status === 'completed' ? 'secondary' : 'destructive'}>
+                        {lastResult.data?.status?.toUpperCase() ?? 'UNKNOWN'}
+                      </Badge>
+                    </div>
                   </div>
                   <Progress value={Math.max(0, Math.min(100, score))} />
                   <p className={`text-sm font-medium ${band.color}`}>{band.label}</p>
 
                   {lastResult.cache?.hit && <Badge variant="outline">Cached result - 0 tokens used</Badge>}
+                  {!lastResult.cache?.hit && <p className="text-xs text-muted-foreground">Live run completed at {new Date().toLocaleTimeString()}</p>}
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="rounded-lg border p-3">
                       <p className="text-xs text-muted-foreground">Latency</p>
-                      <p className="text-lg font-semibold">{Math.round(lastResult.results?.latency ?? 0)} ms</p>
+                      <p className="text-lg font-semibold">{formatMetric(lastResult.results?.latency, ' ms')}</p>
                     </div>
                     <div className="rounded-lg border p-3">
                       <p className="text-xs text-muted-foreground">Uptime</p>
-                      <p className="text-lg font-semibold">{Math.round(lastResult.results?.uptime ?? 0)}%</p>
+                      <p className="text-lg font-semibold">{formatMetric(lastResult.results?.uptime, '%')}</p>
                     </div>
                     <div className="rounded-lg border p-3">
                       <p className="text-xs text-muted-foreground">Error Rate</p>
                       <p className="text-lg font-semibold">{Math.max(0, 100 - Math.round(lastResult.results?.success_rate ?? 0))}%</p>
                     </div>
                     <div className="rounded-lg border p-3">
-                      <p className="text-xs text-muted-foreground">Throughput</p>
-                      <p className="text-lg font-semibold">{Math.round(lastResult.results?.throughput ?? 0)} rps</p>
+                      <p className="text-xs text-muted-foreground">Throughput (req/s)</p>
+                      <p className="text-lg font-semibold">{formatMetric(lastResult.results?.throughput)}</p>
                     </div>
                   </div>
 
@@ -539,7 +586,7 @@ export default function RunTest() {
               {recentTests.map((item) => (
                 <div key={item.id} className="rounded-lg border p-3 text-sm">
                   <p className="line-clamp-1 font-medium">{item.service_url}</p>
-                  <p className="text-xs text-muted-foreground">{item.test_type} • {new Date(item.created_at).toLocaleTimeString()}</p>
+                  <p className="text-xs text-muted-foreground">{item.test_type} | {new Date(item.created_at).toLocaleTimeString()}</p>
                   <div className="mt-2 flex gap-2">
                     <Button
                       size="sm"

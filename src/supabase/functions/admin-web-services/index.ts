@@ -45,6 +45,21 @@ const normalizeTags = (tags: unknown) => {
     .slice(0, 30);
 };
 
+const isMissingWebServicesSchema = (error: { code?: string; message?: string } | null) => {
+  if (!error) return false;
+  const code = String(error.code ?? "").toUpperCase();
+  const message = String(error.message ?? "").toLowerCase();
+  return (
+    code === "42P01" ||
+    code === "PGRST205" ||
+    message.includes("web_services") ||
+    message.includes("schema cache") ||
+    message.includes("could not find the table")
+  );
+};
+
+const toLegacyStatus = (isActive: boolean) => (isActive ? "stable" : "critical");
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: getCorsHeaders(req) });
   if (!["GET", "POST"].includes(req.method)) {
@@ -62,14 +77,44 @@ serve(async (req) => {
 
   try {
     if (req.method === "GET") {
-      const { data, error } = await adminClient
+      const primary = await adminClient
         .from("web_services")
         .select("id, name, category, logo_url, provider, description, base_latency_estimate, availability_score, is_active, tags, created_at, updated_at")
         .order("created_at", { ascending: false });
 
-      if (error) return jsonResponse({ error: "Failed to load services", details: error.message }, 500, req);
+      if (!primary.error) {
+        return jsonResponse({ success: true, services: (primary.data ?? []) as WebServiceRow[] }, 200, req);
+      }
 
-      return jsonResponse({ success: true, services: (data ?? []) as WebServiceRow[] }, 200, req);
+      if (!isMissingWebServicesSchema(primary.error)) {
+        return jsonResponse({ error: "Failed to load services", details: primary.error.message }, 500, req);
+      }
+
+      const legacy = await adminClient
+        .from("services")
+        .select("id, name, category, description, avg_latency, tags, status, created_at, updated_at")
+        .order("created_at", { ascending: false });
+
+      if (legacy.error) {
+        return jsonResponse({ error: "Failed to load services", details: legacy.error.message }, 500, req);
+      }
+
+      const mapped = (legacy.data ?? []).map((row) => ({
+        id: String(row.id),
+        name: String(row.name ?? ""),
+        category: String(row.category ?? "other"),
+        logo_url: null,
+        provider: "legacy-services",
+        description: String(row.description ?? ""),
+        base_latency_estimate: typeof row.avg_latency === "number" ? row.avg_latency : 0,
+        availability_score: 99,
+        is_active: String(row.status ?? "stable") !== "critical",
+        tags: Array.isArray(row.tags) ? row.tags : [],
+        created_at: String(row.created_at ?? new Date().toISOString()),
+        updated_at: String(row.updated_at ?? new Date().toISOString()),
+      })) as WebServiceRow[];
+
+      return jsonResponse({ success: true, services: mapped }, 200, req);
     }
 
     const body = (await req.json().catch(() => ({}))) as UpsertBody;
@@ -108,11 +153,32 @@ serve(async (req) => {
     };
 
     if (id) {
-      const { error: updateErr } = await adminClient
+      const primaryUpdate = await adminClient
         .from("web_services")
         .update(payload)
         .eq("id", id);
-      if (updateErr) return jsonResponse({ error: "Failed to update service", details: updateErr.message }, 500, req);
+
+      if (primaryUpdate.error && !isMissingWebServicesSchema(primaryUpdate.error)) {
+        return jsonResponse({ error: "Failed to update service", details: primaryUpdate.error.message }, 500, req);
+      }
+
+      if (primaryUpdate.error && isMissingWebServicesSchema(primaryUpdate.error)) {
+        const legacyUpdate = await adminClient
+          .from("services")
+          .update({
+            name,
+            category,
+            description,
+            avg_latency: baseLatencyEstimate,
+            tags,
+            status: toLegacyStatus(isActive),
+          })
+          .eq("id", id);
+
+        if (legacyUpdate.error) {
+          return jsonResponse({ error: "Failed to update legacy service", details: legacyUpdate.error.message }, 500, req);
+        }
+      }
 
       await insertAdminAuditLog(adminClient, {
         actor_user_id: user.id,
@@ -132,13 +198,39 @@ serve(async (req) => {
       return jsonResponse({ success: true, action: "updated", service_id: id }, 200, req);
     }
 
-    const { data: inserted, error: insertErr } = await adminClient
+    const primaryInsert = await adminClient
       .from("web_services")
       .insert(payload)
       .select("id")
       .single();
 
-    if (insertErr) return jsonResponse({ error: "Failed to create service", details: insertErr.message }, 500, req);
+    let createdServiceId = String(primaryInsert.data?.id ?? "");
+
+    if (primaryInsert.error && !isMissingWebServicesSchema(primaryInsert.error)) {
+      return jsonResponse({ error: "Failed to create service", details: primaryInsert.error.message }, 500, req);
+    }
+
+    if (primaryInsert.error && isMissingWebServicesSchema(primaryInsert.error)) {
+      const legacyInsert = await adminClient
+        .from("services")
+        .insert({
+          name,
+          category,
+          description,
+          base_url: null,
+          avg_latency: baseLatencyEstimate,
+          tags,
+          status: toLegacyStatus(isActive),
+          created_by: user.id,
+        })
+        .select("id")
+        .single();
+
+      if (legacyInsert.error) {
+        return jsonResponse({ error: "Failed to create legacy service", details: legacyInsert.error.message }, 500, req);
+      }
+      createdServiceId = String(legacyInsert.data?.id ?? "");
+    }
 
     await insertAdminAuditLog(adminClient, {
       actor_user_id: user.id,
@@ -151,11 +243,11 @@ serve(async (req) => {
       request_id: requestId,
       ip_address: ipAddress,
       user_agent: userAgent,
-      reason: `Created service ${inserted.id}`,
-      metadata: { service_id: inserted.id, payload },
+      reason: `Created service ${createdServiceId}`,
+      metadata: { service_id: createdServiceId, payload },
     });
 
-    return jsonResponse({ success: true, action: "created", service_id: inserted.id }, 200, req);
+    return jsonResponse({ success: true, action: "created", service_id: createdServiceId }, 200, req);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";
     return jsonResponse({ error: message }, 500, req);

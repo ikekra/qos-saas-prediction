@@ -31,6 +31,12 @@ type CreditTokensResponse = {
   error?: string;
 };
 
+const normalizeTeamEligiblePlan = (value: unknown): "pro" | "enterprise" | null => {
+  const plan = String(value ?? "").trim().toLowerCase();
+  if (plan === "pro" || plan === "enterprise") return plan;
+  return null;
+};
+
 type RazorpayWebhookPayload = {
   event?: string;
   payload?: {
@@ -73,7 +79,7 @@ serve(async (req) => {
     const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
     const { data: payment, error: paymentError } = await adminClient
       .from("payments")
-      .select("id, user_id, status, tokens_purchased, pack_name")
+      .select("id, user_id, status, tokens_purchased, pack_name, plan_name")
       .eq("gateway_order_id", orderId)
       .maybeSingle();
 
@@ -118,6 +124,22 @@ serve(async (req) => {
       .eq("id", payment.id);
 
     if (updateError) return jsonResponse({ error: "Failed to update payment status", details: updateError.message }, 500);
+
+    const planFromPayment =
+      normalizeTeamEligiblePlan(payment.plan_name) ??
+      normalizeTeamEligiblePlan(payment.pack_name);
+
+    if (planFromPayment) {
+      const { data: authUserData } = await adminClient.auth.admin.getUserById(payment.user_id);
+      await adminClient.from("user_profiles").upsert(
+        {
+          id: payment.user_id,
+          email: authUserData?.user?.email ?? `${payment.user_id}@local.user`,
+          performance_plan: planFromPayment,
+        },
+        { onConflict: "id" },
+      );
+    }
 
     return jsonResponse({ success: true, credited: parsedCredit.credited ?? payment.tokens_purchased });
   } catch (error) {

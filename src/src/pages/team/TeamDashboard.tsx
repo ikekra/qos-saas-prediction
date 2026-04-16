@@ -24,6 +24,40 @@ import {
 } from "@/components/team/api";
 import type { TeamDetailsResponse } from "@/components/team/types";
 
+function slugifyTeam(value: string) {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+}
+
+type TeamCreateFormErrors = {
+  name?: string;
+  slug?: string;
+};
+
+function validateTeamCreateForm(name: string, slug: string): TeamCreateFormErrors {
+  const errors: TeamCreateFormErrors = {};
+  const trimmedName = name.trim();
+  const normalizedSlug = slugifyTeam(slug);
+
+  if (!trimmedName) {
+    errors.name = "Team name is required.";
+  } else if (trimmedName.length < 2 || trimmedName.length > 100) {
+    errors.name = "Team name must be between 2 and 100 characters.";
+  }
+
+  if (!normalizedSlug) {
+    errors.slug = "Team slug is required.";
+  } else if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalizedSlug)) {
+    errors.slug = "Use lowercase letters, numbers, and hyphens only.";
+  }
+
+  return errors;
+}
+
 export default function TeamDashboard() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -32,6 +66,9 @@ export default function TeamDashboard() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftSlug, setDraftSlug] = useState("");
+  const [isCreatingTeam, setIsCreatingTeam] = useState(false);
+  const [teamCreateErrors, setTeamCreateErrors] = useState<TeamCreateFormErrors>({});
+  const [slugEdited, setSlugEdited] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -41,6 +78,7 @@ export default function TeamDashboard() {
       if (next.team) {
         setDraftName(next.team.name);
         setDraftSlug(next.team.slug);
+        setSlugEdited(true);
       }
     } catch (error) {
       toast({ title: "Failed to load team", description: error instanceof Error ? error.message : "Unknown error", variant: "destructive" });
@@ -76,33 +114,79 @@ export default function TeamDashboard() {
             <CardHeader>
               <CardTitle>Create a team</CardTitle>
               <CardDescription>
-                Standard plans stay solo. Pro supports up to 4 seats, Enterprise supports up to 5 seats.
+                Standard process: enter a team name, confirm slug, then create your workspace.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">Detected plan: <span className="font-medium capitalize">{payload?.eligiblePlan ?? "standard"}</span></p>
               <div className="space-y-2">
                 <Label htmlFor="team-name">Team name</Label>
-                <Input id="team-name" value={draftName} onChange={(event) => setDraftName(event.target.value)} />
+                <Input
+                  id="team-name"
+                  value={draftName}
+                  onChange={(event) => {
+                    const nextName = event.target.value;
+                    setDraftName(nextName);
+                    if (!slugEdited) {
+                      setDraftSlug(slugifyTeam(nextName));
+                    }
+                    if (teamCreateErrors.name) {
+                      setTeamCreateErrors((prev) => ({ ...prev, name: undefined }));
+                    }
+                  }}
+                />
+                {teamCreateErrors.name && (
+                  <p className="text-xs text-destructive">{teamCreateErrors.name}</p>
+                )}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="team-slug">Team slug</Label>
-                <Input id="team-slug" value={draftSlug} onChange={(event) => setDraftSlug(event.target.value)} />
+                <Input
+                  id="team-slug"
+                  value={draftSlug}
+                  onChange={(event) => {
+                    setSlugEdited(true);
+                    setDraftSlug(slugifyTeam(event.target.value));
+                    if (teamCreateErrors.slug) {
+                      setTeamCreateErrors((prev) => ({ ...prev, slug: undefined }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">Lowercase letters, numbers, and hyphens only.</p>
+                {teamCreateErrors.slug && (
+                  <p className="text-xs text-destructive">{teamCreateErrors.slug}</p>
+                )}
               </div>
               <Button
-                disabled={(payload?.eligiblePlan ?? "standard") === "standard" || !draftName.trim()}
+                disabled={(payload?.eligiblePlan ?? "standard") === "standard" || isCreatingTeam}
                 onClick={async () => {
+                  const finalName = draftName.trim();
+                  const finalSlug = slugifyTeam(draftSlug || draftName);
+                  const validation = validateTeamCreateForm(finalName, finalSlug);
+
+                  if (validation.name || validation.slug) {
+                    setTeamCreateErrors(validation);
+                    return;
+                  }
+
                   try {
-                    await createTeam({ name: draftName, slug: draftSlug });
+                    setIsCreatingTeam(true);
+                    setTeamCreateErrors({});
+                    await createTeam({ name: finalName, slug: finalSlug });
                     toast({ title: "Team created" });
                     await load();
                   } catch (error) {
                     toast({ title: "Unable to create team", description: error instanceof Error ? error.message : "Unknown error", variant: "destructive" });
+                  } finally {
+                    setIsCreatingTeam(false);
                   }
                 }}
               >
-                Create team
+                {isCreatingTeam ? "Creating..." : "Create team"}
               </Button>
+              {(payload?.eligiblePlan ?? "standard") === "standard" && (
+                <p className="text-xs text-muted-foreground">Upgrade to Pro or Enterprise to enable team workspaces.</p>
+              )}
             </CardContent>
           </Card>
         ) : (
@@ -195,7 +279,7 @@ export default function TeamDashboard() {
                       <div key={invite.id} className="rounded-xl border p-3">
                         <p className="font-medium">{invite.invited_email}</p>
                         <p className="text-xs text-muted-foreground">
-                          {invite.role} • expires {new Date(invite.expires_at).toLocaleString()}
+                          {invite.role} | expires {new Date(invite.expires_at).toLocaleString()}
                         </p>
                         {permissions?.canInvite && (
                           <Button
