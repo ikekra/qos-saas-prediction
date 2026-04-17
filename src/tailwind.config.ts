@@ -57,6 +57,20 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        // QoSCollab custom dark theme palette
+        qos: {
+          navy: "#0A0F1E",
+          surface: "#111827",
+          "surface-light": "#1E293B",
+          "accent-blue": "#3B82F6",
+          "accent-violet": "#8B5CF6",
+          "accent-cyan": "#06B6D4",
+          "accent-purple": "#A855F7",
+          "text-primary": "#F9FAFB",
+          "text-secondary": "#94A3B8",
+          "success-green": "#10B981",
+          "warning-amber": "#F59E0B",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
