@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, easeOut } from "framer-motion";
 import {
   BarChart3,
   Bell,
