@@ -3,6 +3,7 @@ import { getCorsHeaders, jsonResponse } from "../_shared/cors.ts";
 import { requireAdminContext } from "../_shared/admin-rbac.ts";
 import { insertAdminAuditLog } from "../_shared/admin-audit.ts";
 
+// Safe number parsing helper
 const asNumber = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -29,13 +30,16 @@ serve(async (req) => {
       const search = (url.searchParams.get("search") ?? "").trim().toLowerCase();
       const limit = Math.min(200, Math.max(10, asNumber(url.searchParams.get("limit"), 80)));
 
+      // Fetch token summary
       const { data: summaryData, error: summaryError } = await adminClient.rpc("get_token_admin_summary");
       if (summaryError) {
+        console.error("Summary RPC error:", summaryError);
         return jsonResponse({ error: "Failed to load token summary", details: summaryError.message }, 500, req);
       }
 
       const summaryRow = Array.isArray(summaryData) ? summaryData[0] : summaryData;
 
+      // Fetch user profiles
       const { data: profiles, error: profileErr } = await adminClient
         .from("user_profiles")
         .select("id, email, token_balance, lifetime_tokens_used, updated_at")
@@ -43,9 +47,11 @@ serve(async (req) => {
         .limit(limit);
 
       if (profileErr) {
+        console.error("Profile fetch error:", profileErr);
         return jsonResponse({ error: "Failed to load user balances", details: profileErr.message }, 500, req);
       }
 
+      // Fetch audit logs
       const { data: recentAudit, error: recentAuditErr } = await adminClient
         .from("admin_audit_logs")
         .select("id, created_at, actor_email, action, target_email, target_user_id, status, before_value, after_value, delta_value, reason")
@@ -53,9 +59,11 @@ serve(async (req) => {
         .limit(40);
 
       if (recentAuditErr) {
+        console.error("Audit log fetch error:", recentAuditErr);
         return jsonResponse({ error: "Failed to load admin audit logs", details: recentAuditErr.message }, 500, req);
       }
 
+      // Filter profiles based on search
       const filtered = (profiles ?? []).filter((row) => {
         if (!search) return true;
         return row.id.toLowerCase().includes(search) || (row.email ?? "").toLowerCase().includes(search);
@@ -77,6 +85,7 @@ serve(async (req) => {
       );
     }
 
+    // POST handler
     const body = (await req.json().catch(() => ({}))) as {
       target_user_id?: string;
       mode?: "set" | "add" | "deduct";

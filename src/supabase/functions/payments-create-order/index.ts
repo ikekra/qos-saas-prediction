@@ -53,6 +53,14 @@ const normalizeCustomAmount = (value: unknown): number | null => {
   return null;
 };
 
+const normalizeTeamEligiblePlan = (pack: string): "pro" | "enterprise" | null => {
+  const normalized = (pack ?? "").trim().toLowerCase();
+  if (normalized === "pro" || normalized === "enterprise") {
+    return normalized as "pro" | "enterprise";
+  }
+  return null;
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
@@ -241,6 +249,33 @@ serve(async (req) => {
 
       if (updateError) {
         return jsonResponse({ error: "Failed to mark mock payment as success", details: updateError.message }, 500);
+      }
+
+      // Update or create subscription record with active status for team-eligible plans only
+      const teamEligiblePlan = normalizeTeamEligiblePlan(packName);
+      if (teamEligiblePlan) {
+        const now = new Date();
+        const periodEnd = new Date(now);
+        periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+        const { error: subscriptionError } = await adminClient
+          .from("subscriptions")
+          .upsert(
+            {
+              user_id: user.id,
+              plan: teamEligiblePlan,
+              status: "active",
+              current_period_start: now.toISOString(),
+              current_period_end: periodEnd.toISOString(),
+              cancel_at_period_end: false,
+            },
+            { onConflict: "user_id" },
+          );
+
+        if (subscriptionError) {
+          console.error("Failed to update subscription status in mock mode:", subscriptionError);
+          // Don't fail if subscription update fails
+        }
       }
 
       return jsonResponse({

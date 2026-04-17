@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
+import { invokeWithLiveToken, authFunctionFetch, extractFunctionErrorMessage } from "@/lib/live-token";
 import { Loader2, Plus, Save } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -69,8 +69,12 @@ export default function WebServicesAdmin() {
   const fetchServices = useCallback(async () => {
     setLoading(true);
     try {
-      const { data, error } = await invokeWithLiveToken<{ success: boolean; services: WebService[] }>("admin-web-services");
-      if (error) throw error;
+      const response = await authFunctionFetch("admin-web-services", "", { method: "GET" });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+      const data = await response.json() as { success: boolean; services: WebService[] };
       if (!data?.success) throw new Error("Failed to load services.");
       setServices(data.services || []);
     } catch (error: unknown) {

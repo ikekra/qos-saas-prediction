@@ -139,6 +139,31 @@ serve(async (req) => {
         },
         { onConflict: "id" },
       );
+
+      // Update or create subscription record with active status for team-eligible plans
+      const now = new Date();
+      const periodEnd = new Date(now);
+      periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+      const { error: subscriptionError } = await adminClient
+        .from("subscriptions")
+        .upsert(
+          {
+            user_id: payment.user_id,
+            plan: planFromPayment,
+            status: "active",
+            current_period_start: now.toISOString(),
+            current_period_end: periodEnd.toISOString(),
+            cancel_at_period_end: false,
+          },
+          { onConflict: "user_id" },
+        );
+
+      if (subscriptionError) {
+        console.error("Failed to update subscription status:", subscriptionError);
+        // Don't fail the webhook if subscription update fails
+        // The payment is already successful
+      }
     }
 
     return jsonResponse({ success: true, credited: parsedCredit.credited ?? payment.tokens_purchased });

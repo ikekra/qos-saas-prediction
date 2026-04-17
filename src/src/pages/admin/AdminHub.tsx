@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Header } from "@/components/Header";
 import { authFunctionFetch } from "@/lib/live-token";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
 
 type OverviewPayload = {
   success: boolean;
@@ -42,24 +43,113 @@ type OverviewPayload = {
 export default function AdminHub() {
   const { toast } = useToast();
   const [payload, setPayload] = useState<OverviewPayload | null>(null);
+  const [isLive, setIsLive] = useState(false);
+  const subscriptionsRef = useRef<{ unsubscribe: () => void }[]>([]);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const load = async () => {
-    const response = await authFunctionFetch("admin-control-plane", "/api/admin/overview");
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Failed to load admin overview");
-    setPayload(data);
+    try {
+      const response = await authFunctionFetch("admin-control-plane", "/api/admin/overview");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Failed to load admin overview");
+      setPayload(data);
+    } catch (error) {
+      console.error("Failed to load admin overview", error);
+    }
+  };
+
+  const setupRealtimeSubscriptions = () => {
+    try {
+      // Unsubscribe from existing subscriptions
+      subscriptionsRef.current.forEach(sub => {
+        try {
+          sub.unsubscribe();
+        } catch (e) {
+          console.warn("Error unsubscribing:", e);
+        }
+      });
+      subscriptionsRef.current = [];
+
+      // Subscribe to payments table for real-time revenue updates
+      const paymentsSub = supabase
+        .channel("admin-payments-live", { config: { broadcast: { self: false } } })
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "payments", filter: "status=eq.success" },
+          () => {
+            console.log("Payment received - refreshing overview");
+            void load();
+          }
+        )
+        .on("error", (error) => {
+          console.error("Payments channel error:", error);
+        })
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            console.log("Payments subscription active");
+            setIsLive(true);
+          }
+        });
+
+      // Subscribe to subscriptions table for plan changes
+      const subscriptionsSub = supabase
+        .channel("admin-subs-live", { config: { broadcast: { self: false } } })
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "subscriptions" },
+          () => {
+            console.log("Subscription created - refreshing overview");
+            void load();
+          }
+        )
+        .on("error", (error) => {
+          console.error("Subscriptions channel error:", error);
+        })
+        .subscribe();
+
+      // Subscribe to teams table for team count changes
+      const teamsSub = supabase
+        .channel("admin-teams-live", { config: { broadcast: { self: false } } })
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "teams" },
+          () => {
+            console.log("Team created - refreshing overview");
+            void load();
+          }
+        )
+        .on("error", (error) => {
+          console.error("Teams channel error:", error);
+        })
+        .subscribe();
+
+      subscriptionsRef.current = [
+        { unsubscribe: () => paymentsSub.unsubscribe() },
+        { unsubscribe: () => subscriptionsSub.unsubscribe() },
+        { unsubscribe: () => teamsSub.unsubscribe() },
+      ];
+
+      setIsLive(true);
+    } catch (error) {
+      console.error("Failed to setup realtime subscriptions:", error);
+      setIsLive(false);
+      // Continue with polling if realtime fails
+    }
   };
 
   useEffect(() => {
-    void load().catch((error) => {
-      toast({ title: "Failed to load admin overview", description: error instanceof Error ? error.message : "Unknown error", variant: "destructive" });
-    });
+    void load();
+    setupRealtimeSubscriptions();
 
-    const timer = window.setInterval(() => {
-      void load().catch(() => undefined);
-    }, 30000);
+    // Fallback polling every 60 seconds for data consistency
+    refreshTimerRef.current = window.setInterval(() => {
+      void load();
+    }, 60000);
 
-    return () => window.clearInterval(timer);
+    return () => {
+      if (refreshTimerRef.current) window.clearInterval(refreshTimerRef.current);
+      subscriptionsRef.current.forEach(sub => sub.unsubscribe());
+    };
   }, []);
 
   const money = (value: number) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" }).format(value);
@@ -71,8 +161,10 @@ export default function AdminHub() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-semibold">Admin control plane</h1>
-            <p className="text-sm text-muted-foreground">
-              {payload?.refreshedAt ? `Last updated ${new Date(payload.refreshedAt).toLocaleTimeString()}` : "Loading live metrics..."}
+            <p className="text-sm text-muted-foreground flex items-center gap-2">
+              <span className={`inline-block w-2 h-2 rounded-full ${isLive ? "bg-green-500 animate-pulse" : "bg-gray-400"}`}></span>
+              {isLive ? "Live metrics" : "Loading metrics..."}
+              {payload?.refreshedAt && ` • Last updated ${new Date(payload.refreshedAt).toLocaleTimeString()}`}
             </p>
           </div>
           <div className="flex gap-2">

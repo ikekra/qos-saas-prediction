@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { invokeWithLiveToken, extractFunctionErrorMessage } from "@/lib/live-token";
+import { invokeWithLiveToken, authFunctionFetch, extractFunctionErrorMessage } from "@/lib/live-token";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
 
@@ -67,14 +67,18 @@ export default function TokenAdmin() {
       const qs = new URLSearchParams();
       if (debouncedQuery) qs.set("search", debouncedQuery);
       qs.set("limit", "120");
-      const functionName = `admin-token-console${qs.toString() ? `?${qs.toString()}` : ""}`;
-      const { data, error } = await invokeWithLiveToken<{
+      const url = `admin-token-console${qs.toString() ? `?${qs.toString()}` : ""}`;
+      const response = await authFunctionFetch(url, "", { method: "GET" });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+      const data = await response.json() as {
         success: boolean;
         summary: AdminSummary;
         users: AdminUserRow[];
         audit_logs: AdminAuditRow[];
-      }>(functionName);
-      if (error) throw error;
+      };
       if (!data?.success) throw new Error("Failed to load token admin data.");
       setSummary(data.summary);
       setUsers(data.users || []);
