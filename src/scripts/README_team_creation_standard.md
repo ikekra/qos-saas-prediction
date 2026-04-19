@@ -35,4 +35,3 @@ Success payload:
   "team": { "...": "..." }
 }
 ```
-
