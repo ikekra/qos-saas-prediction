@@ -32,4 +32,3 @@ This script runs:
 2. Standard user cannot create team (expected block).
 3. Service create works in `/services/new`.
 4. Admin service create/update works in `/admin/web-services`.
-
