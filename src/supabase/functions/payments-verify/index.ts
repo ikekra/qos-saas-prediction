@@ -44,6 +44,74 @@ const normalizeTeamEligiblePlan = (value: unknown): "pro" | "enterprise" | null 
   return null;
 };
 
+const persistPaidPlan = async (
+  adminClient: ReturnType<typeof createClient>,
+  userId: string,
+  email: string,
+  plan: "pro" | "enterprise",
+) => {
+  const { error: profileError } = await adminClient.from("user_profiles").upsert(
+    {
+      id: userId,
+      email,
+      performance_plan: plan,
+    },
+    { onConflict: "id" },
+  );
+
+  if (profileError) {
+    console.error("Failed to update performance plan:", profileError);
+  }
+
+  const now = new Date();
+  const periodEnd = new Date(now);
+  periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+  const subscriptionPayload = {
+    plan,
+    status: "active",
+    current_period_start: now.toISOString(),
+    current_period_end: periodEnd.toISOString(),
+    cancel_at_period_end: false,
+    deleted_at: null,
+  };
+
+  const { data: existingSubscription, error: existingSubscriptionError } = await adminClient
+    .from("subscriptions")
+    .select("id")
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingSubscriptionError) {
+    console.error("Failed to load existing subscription:", existingSubscriptionError);
+    return;
+  }
+
+  if (existingSubscription?.id) {
+    const { error: updateSubscriptionError } = await adminClient
+      .from("subscriptions")
+      .update(subscriptionPayload)
+      .eq("id", existingSubscription.id);
+
+    if (updateSubscriptionError) {
+      console.error("Failed to update subscription status:", updateSubscriptionError);
+    }
+    return;
+  }
+
+  const { error: insertSubscriptionError } = await adminClient.from("subscriptions").insert({
+    user_id: userId,
+    ...subscriptionPayload,
+  });
+
+  if (insertSubscriptionError) {
+    console.error("Failed to create subscription status:", insertSubscriptionError);
+  }
+};
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed. Use POST." }, 405);
@@ -172,39 +240,7 @@ serve(async (req) => {
       normalizeTeamEligiblePlan(payment.pack_name);
 
     if (planFromPayment) {
-      await adminClient.from("user_profiles").upsert(
-        {
-          id: user.id,
-          email: user.email ?? `${user.id}@local.user`,
-          performance_plan: planFromPayment,
-        },
-        { onConflict: "id" },
-      );
-
-      // Update or create subscription record with active status for team-eligible plans
-      const now = new Date();
-      const periodEnd = new Date(now);
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
-
-      const { error: subscriptionError } = await adminClient
-        .from("subscriptions")
-        .upsert(
-          {
-            user_id: user.id,
-            plan: planFromPayment,
-            status: "active",
-            current_period_start: now.toISOString(),
-            current_period_end: periodEnd.toISOString(),
-            cancel_at_period_end: false,
-          },
-          { onConflict: "user_id" },
-        );
-
-      if (subscriptionError) {
-        console.error("Failed to update subscription status:", subscriptionError);
-        // Don't fail the payment verification if subscription update fails
-        // The payment is already successful
-      }
+      await persistPaidPlan(adminClient, user.id, user.email ?? `${user.id}@local.user`, planFromPayment);
     }
 
     return jsonResponse({

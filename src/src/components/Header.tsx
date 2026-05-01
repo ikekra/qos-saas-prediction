@@ -15,6 +15,7 @@ import {
   FileText,
   GitCompare,
   Globe,
+  Home,
   LayoutGrid,
   LineChart,
   LogOut,
@@ -78,6 +79,11 @@ export function Header() {
         <nav className="flex items-center gap-3">
           {user ? (
             <div className="hidden items-center gap-1 md:flex">
+              <Link to="/">
+                <Button variant="ghost" size="sm">
+                  Home
+                </Button>
+              </Link>
               <Link to={dashboardPath}>
                 <Button variant="ghost" size="sm">
                   Dashboard
@@ -165,6 +171,13 @@ export function Header() {
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-56">
                     <DropdownMenuLabel>QoS Tools</DropdownMenuLabel>
+                    <DropdownMenuItem asChild>
+                      <Link to="/" className="flex items-center gap-2">
+                        <Home className="h-4 w-4" />
+                        Home
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>
                       <Link to="/qos/run-test" className="flex items-center gap-2">
                         <TestTube className="h-4 w-4" />

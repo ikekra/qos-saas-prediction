@@ -37,6 +37,74 @@ const normalizeTeamEligiblePlan = (value: unknown): "pro" | "enterprise" | null 
   return null;
 };
 
+const persistPaidPlan = async (
+  adminClient: ReturnType<typeof createClient>,
+  userId: string,
+  email: string,
+  plan: "pro" | "enterprise",
+) => {
+  const { error: profileError } = await adminClient.from("user_profiles").upsert(
+    {
+      id: userId,
+      email,
+      performance_plan: plan,
+    },
+    { onConflict: "id" },
+  );
+
+  if (profileError) {
+    console.error("Failed to update performance plan:", profileError);
+  }
+
+  const now = new Date();
+  const periodEnd = new Date(now);
+  periodEnd.setMonth(periodEnd.getMonth() + 1);
+
+  const subscriptionPayload = {
+    plan,
+    status: "active",
+    current_period_start: now.toISOString(),
+    current_period_end: periodEnd.toISOString(),
+    cancel_at_period_end: false,
+    deleted_at: null,
+  };
+
+  const { data: existingSubscription, error: existingSubscriptionError } = await adminClient
+    .from("subscriptions")
+    .select("id")
+    .eq("user_id", userId)
+    .is("deleted_at", null)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingSubscriptionError) {
+    console.error("Failed to load existing subscription:", existingSubscriptionError);
+    return;
+  }
+
+  if (existingSubscription?.id) {
+    const { error: updateSubscriptionError } = await adminClient
+      .from("subscriptions")
+      .update(subscriptionPayload)
+      .eq("id", existingSubscription.id);
+
+    if (updateSubscriptionError) {
+      console.error("Failed to update subscription status:", updateSubscriptionError);
+    }
+    return;
+  }
+
+  const { error: insertSubscriptionError } = await adminClient.from("subscriptions").insert({
+    user_id: userId,
+    ...subscriptionPayload,
+  });
+
+  if (insertSubscriptionError) {
+    console.error("Failed to create subscription status:", insertSubscriptionError);
+  }
+};
+
 type RazorpayWebhookPayload = {
   event?: string;
   payload?: {
@@ -131,39 +199,12 @@ serve(async (req) => {
 
     if (planFromPayment) {
       const { data: authUserData } = await adminClient.auth.admin.getUserById(payment.user_id);
-      await adminClient.from("user_profiles").upsert(
-        {
-          id: payment.user_id,
-          email: authUserData?.user?.email ?? `${payment.user_id}@local.user`,
-          performance_plan: planFromPayment,
-        },
-        { onConflict: "id" },
+      await persistPaidPlan(
+        adminClient,
+        payment.user_id,
+        authUserData?.user?.email ?? `${payment.user_id}@local.user`,
+        planFromPayment,
       );
-
-      // Update or create subscription record with active status for team-eligible plans
-      const now = new Date();
-      const periodEnd = new Date(now);
-      periodEnd.setMonth(periodEnd.getMonth() + 1);
-
-      const { error: subscriptionError } = await adminClient
-        .from("subscriptions")
-        .upsert(
-          {
-            user_id: payment.user_id,
-            plan: planFromPayment,
-            status: "active",
-            current_period_start: now.toISOString(),
-            current_period_end: periodEnd.toISOString(),
-            cancel_at_period_end: false,
-          },
-          { onConflict: "user_id" },
-        );
-
-      if (subscriptionError) {
-        console.error("Failed to update subscription status:", subscriptionError);
-        // Don't fail the webhook if subscription update fails
-        // The payment is already successful
-      }
     }
 
     return jsonResponse({ success: true, credited: parsedCredit.credited ?? payment.tokens_purchased });

@@ -8,6 +8,20 @@ const corsHeaders = getCorsHeaders();
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
+const normalizeUrl = (value: string) => value.trim().replace(/\/+$/, "");
+
+const isValidHttpUrl = (value: string) => {
+  if (!value || value === "#") return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const isServiceReachable = (status: number) => status < 500;
+
 const computePredictedEfficiency = (params: {
   latency: number;
   throughput: number | null | undefined;
@@ -112,6 +126,7 @@ serve(async (req) => {
 
     const {
       serviceUrl,
+      serviceId,
       testType,
       forceFresh = false,
       isScheduled = false,
@@ -122,7 +137,16 @@ serve(async (req) => {
       return jsonResponse({ error: 'Missing required parameters' }, 400, req);
     }
 
-    console.log(`Running ${testType} test for ${serviceUrl}`);
+    const normalizedServiceUrl = normalizeUrl(String(serviceUrl));
+    if (!isValidHttpUrl(normalizedServiceUrl)) {
+      return jsonResponse(
+        { error: 'Invalid service URL. Please select or enter a valid http(s) URL.' },
+        400,
+        req,
+      );
+    }
+
+    console.log(`Running ${testType} test for ${normalizedServiceUrl}`);
     const estimatedTokens = computeTokenCost({
       testType,
       isScheduled: Boolean(isScheduled),
@@ -154,7 +178,7 @@ serve(async (req) => {
         .from('tests')
         .select('*')
         .eq('user_id', user.id)
-        .eq('service_url', serviceUrl)
+        .eq('service_url', normalizedServiceUrl)
         .eq('test_type', testType)
         .eq('status', 'completed')
         .gte('created_at', cacheThreshold)
@@ -293,7 +317,7 @@ serve(async (req) => {
     try {
       // Latency test - measure response time
       if (testType === 'latency' || testType === 'load' || testType === 'throughput') {
-        const response = await fetch(serviceUrl, {
+        const response = await fetch(normalizedServiceUrl, {
           method: 'GET',
           signal: AbortSignal.timeout(10000), // 10 second timeout
         });
@@ -302,9 +326,10 @@ serve(async (req) => {
         const latency = endTime - startTime;
         
         testResults.latency = latency;
-        testResults.uptime = response.ok ? 100 : 0;
-        testResults.success_rate = response.ok ? 100 : 0;
-        testResults.throughput = response.ok ? round2(1000 / Math.max(1, latency)) : 0; // req/s
+        const reachable = isServiceReachable(response.status);
+        testResults.uptime = reachable ? 100 : 0;
+        testResults.success_rate = reachable ? 100 : 0;
+        testResults.throughput = reachable ? round2(1000 / Math.max(1, latency)) : 0; // req/s
 
         // For throughput test, enrich with a payload-size signal while keeping req/s as primary.
         if (testType === 'throughput') {
@@ -320,15 +345,23 @@ serve(async (req) => {
 
       // Uptime check
       if (testType === 'uptime') {
-        const response = await fetch(serviceUrl, {
+        let response = await fetch(normalizedServiceUrl, {
           method: 'HEAD',
           signal: AbortSignal.timeout(5000),
         });
-        
+
+        if (response.status === 405 || response.status === 403) {
+          response = await fetch(normalizedServiceUrl, {
+            method: 'GET',
+            signal: AbortSignal.timeout(10000),
+          });
+        }
+
+        const reachable = isServiceReachable(response.status);
         testResults.latency = Date.now() - startTime;
-        testResults.uptime = response.ok ? 100 : 0;
-        testResults.success_rate = response.ok ? 100 : 0;
-        testResults.throughput = response.ok ? round2(1000 / Math.max(1, testResults.latency)) : 0;
+        testResults.uptime = reachable ? 100 : 0;
+        testResults.success_rate = reachable ? 100 : 0;
+        testResults.throughput = reachable ? round2(1000 / Math.max(1, testResults.latency)) : 0;
       }
 
     } catch (error) {
@@ -400,7 +433,7 @@ serve(async (req) => {
         amount: finalDeductedTokens,
         balance_after: finalBalance,
         description: `QoS ${testType} test`,
-        endpoint: serviceUrl,
+        endpoint: normalizedServiceUrl,
       },
       ...(refundedTokens > 0
         ? [
@@ -410,7 +443,7 @@ serve(async (req) => {
               amount: refundedTokens,
               balance_after: finalBalance,
               description: `QoS ${testType} refund`,
-              endpoint: serviceUrl,
+              endpoint: normalizedServiceUrl,
             },
           ]
         : []),
@@ -420,14 +453,33 @@ serve(async (req) => {
       console.error('Token transaction logging failed', txInsert.error);
     }
 
+    let matchedService: { id?: string } | null = null;
+    try {
+      const serviceLookup = serviceId
+        ? await adminClient
+            .from('web_services')
+            .select('id')
+            .eq('id', serviceId)
+            .maybeSingle()
+        : await adminClient
+            .from('web_services')
+            .select('id')
+            .or(`base_url.eq.${normalizedServiceUrl},docs_url.eq.${normalizedServiceUrl}`)
+            .maybeSingle();
+      const { data } = serviceLookup;
+      matchedService = (data as { id?: string } | null) ?? null;
+    } catch (error) {
+      console.warn('Skipping service linkage because web_services schema is unavailable:', error);
+    }
+
     // Store test results in database
     let testRecord: Record<string, unknown> | null = null;
     try {
-      const { data, error: insertError } = await adminClient
+      let insertResult = await adminClient
         .from('tests')
         .insert({
           user_id: user.id,
-          service_url: serviceUrl,
+          service_url: normalizedServiceUrl,
           test_type: testType,
           latency: testResults.latency,
           uptime: testResults.uptime,
@@ -435,14 +487,33 @@ serve(async (req) => {
           success_rate: testResults.success_rate,
           status: runStatus,
           error_message: runErrorMessage,
+          ...(matchedService?.id ? { service_id: matchedService.id } : {}),
         })
         .select()
         .single();
 
-      if (insertError) {
-        console.error('Database error:', insertError);
+      if (insertResult.error && String(insertResult.error.message || '').includes('service_id')) {
+        insertResult = await adminClient
+          .from('tests')
+          .insert({
+            user_id: user.id,
+            service_url: normalizedServiceUrl,
+            test_type: testType,
+            latency: testResults.latency,
+            uptime: testResults.uptime,
+            throughput: testResults.throughput,
+            success_rate: testResults.success_rate,
+            status: runStatus,
+            error_message: runErrorMessage,
+          })
+          .select()
+          .single();
+      }
+
+      if (insertResult.error) {
+        console.error('Database error:', insertResult.error);
       } else {
-        testRecord = (data as Record<string, unknown> | null) ?? null;
+        testRecord = (insertResult.data as Record<string, unknown> | null) ?? null;
       }
     } catch (error) {
       console.error('Test record insert skipped because tests schema is unavailable:', error);
@@ -454,18 +525,6 @@ serve(async (req) => {
       availability: testResults.uptime ?? 0,
       reliability: testResults.success_rate ?? 0,
     });
-
-    let matchedService: { id?: string } | null = null;
-    try {
-      const { data } = await adminClient
-        .from('web_services')
-        .select('id')
-        .or(`base_url.eq.${serviceUrl},docs_url.eq.${serviceUrl}`)
-        .maybeSingle();
-      matchedService = (data as { id?: string } | null) ?? null;
-    } catch (error) {
-      console.warn('Skipping service linkage because web_services schema is unavailable:', error);
-    }
 
     try {
       const { error: predictionInsertError } = await adminClient

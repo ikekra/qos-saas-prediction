@@ -10,22 +10,40 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { ChartContainer } from '@/components/ui/chart';
 import { Loader2, TrendingUp, Clock, Activity, Download, Filter, Sparkles } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { format, subDays, isAfter, isBefore } from 'date-fns';
+import { format, subDays, startOfDay, endOfDay } from 'date-fns';
 import { motion } from 'framer-motion';
 import { Badge } from '@/components/ui/badge';
 
 interface Test {
   id: string;
   service_url: string;
+  service_id?: string | null;
   test_type: string;
   latency: number;
   uptime: number;
   throughput: number;
   success_rate: number;
   created_at: string;
+  status?: string | null;
+  error_message?: string | null;
+  service_name?: string;
+}
+
+interface WebServiceLookup {
+  id: string;
+  name: string;
+  service_name?: string | null;
+  base_url?: string | null;
+  docs_url?: string | null;
 }
 
 const COLORS = ['hsl(var(--primary))', 'hsl(var(--accent))', 'hsl(var(--secondary))', 'hsl(var(--muted))'];
+const normalizeUrl = (value?: string | null) => (value || '').trim().replace(/\/+$/, '');
+const getDisplayServiceName = (test: Test) => test.service_name || test.service_url || 'Unknown Service';
+const isSchemaColumnError = (message?: string | null) => {
+  const normalized = String(message || '').toLowerCase();
+  return normalized.includes('column') || normalized.includes('schema cache') || normalized.includes('does not exist');
+};
 
 export default function Reports() {
   const { toast } = useToast();
@@ -71,9 +89,8 @@ export default function Reports() {
             table: 'tests',
             filter: `user_id=eq.${user.id}`,
           },
-          (payload) => {
-            const row = payload.new as Test;
-            setTests((prev) => [row, ...prev].slice(0, 50));
+          () => {
+            void fetchTests();
           }
         )
         .subscribe((status) => {
@@ -118,14 +135,16 @@ export default function Reports() {
     let filtered = [...tests];
 
     // Date filter
+    const fromDate = startOfDay(new Date(dateFrom));
+    const toDate = endOfDay(new Date(dateTo));
     filtered = filtered.filter(test => {
       const testDate = new Date(test.created_at);
-      return isAfter(testDate, new Date(dateFrom)) && isBefore(testDate, new Date(dateTo + 'T23:59:59'));
+      return testDate >= fromDate && testDate <= toDate;
     });
 
     // Service filter
     if (filterService !== 'all') {
-      filtered = filtered.filter(test => test.service_url === filterService);
+      filtered = filtered.filter(test => getDisplayServiceName(test) === filterService);
     }
 
     // Test type filter
@@ -149,17 +168,85 @@ export default function Reports() {
         return;
       }
 
-      const { data, error } = await supabase
+      let testsData: Test[] = [];
+
+      const primaryTestsQuery = await supabase
         .from('tests')
-        .select('*')
+        .select('id, service_url, service_id, test_type, latency, uptime, throughput, success_rate, created_at, status, error_message')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(50);
 
-      if (error) throw error;
+      if (primaryTestsQuery.error) {
+        if (!isSchemaColumnError(primaryTestsQuery.error.message)) {
+          throw primaryTestsQuery.error;
+        }
 
-      setTests(data || []);
-      setFilteredTests(data || []);
+        const fallbackTestsQuery = await supabase
+          .from('tests')
+          .select('id, service_url, test_type, latency, uptime, throughput, success_rate, created_at')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+        if (fallbackTestsQuery.error) throw fallbackTestsQuery.error;
+
+        testsData = ((fallbackTestsQuery.data || []) as Test[]).map((row) => ({
+          ...row,
+          service_id: null,
+          status: 'completed',
+          error_message: null,
+        }));
+      } else {
+        testsData = (primaryTestsQuery.data || []) as Test[];
+      }
+
+      let services: WebServiceLookup[] = [];
+
+      const primaryServicesQuery = await supabase
+        .from('web_services')
+        .select('id, name, service_name, base_url, docs_url');
+
+      if (primaryServicesQuery.error) {
+        if (!isSchemaColumnError(primaryServicesQuery.error.message)) {
+          throw primaryServicesQuery.error;
+        }
+
+        const fallbackServicesQuery = await supabase
+          .from('web_services')
+          .select('id, name, base_url, docs_url');
+
+        if (fallbackServicesQuery.error) {
+          console.warn('Reports service lookup unavailable:', fallbackServicesQuery.error.message);
+        } else {
+          services = (fallbackServicesQuery.data || []) as WebServiceLookup[];
+        }
+      } else {
+        services = (primaryServicesQuery.data || []) as WebServiceLookup[];
+      }
+      const servicesById = new Map(services.map((service) => [service.id, service]));
+      const servicesByUrl = new Map<string, WebServiceLookup>();
+
+      for (const service of services) {
+        const baseUrl = normalizeUrl(service.base_url);
+        const docsUrl = normalizeUrl(service.docs_url);
+        if (baseUrl) servicesByUrl.set(baseUrl, service);
+        if (docsUrl) servicesByUrl.set(docsUrl, service);
+      }
+
+      const enrichedTests = testsData.map((test) => {
+        const linkedService =
+          (test.service_id ? servicesById.get(test.service_id) : undefined) ||
+          servicesByUrl.get(normalizeUrl(test.service_url));
+
+        return {
+          ...test,
+          service_name: linkedService?.service_name || linkedService?.name || test.service_url,
+        };
+      });
+
+      setTests(enrichedTests);
+      setFilteredTests(enrichedTests);
     } catch (error: any) {
       toast({
         title: "Error Loading Reports",
@@ -181,15 +268,17 @@ export default function Reports() {
       return;
     }
 
-    const headers = ['Date', 'Service URL', 'Test Type', 'Latency (ms)', 'Uptime (%)', 'Throughput', 'Success Rate (%)'];
+    const headers = ['Date', 'Service Name', 'Service URL', 'Test Type', 'Latency (ms)', 'Uptime (%)', 'Throughput', 'Success Rate (%)', 'Status'];
     const csvData = filteredTests.map(test => [
       format(new Date(test.created_at), 'yyyy-MM-dd HH:mm:ss'),
+      `"${String(getDisplayServiceName(test)).replace(/"/g, '""')}"`,
       test.service_url,
       test.test_type,
       test.latency?.toFixed(2) || 'N/A',
       test.uptime?.toFixed(2) || 'N/A',
       test.throughput?.toFixed(2) || 'N/A',
       test.success_rate?.toFixed(2) || 'N/A',
+      test.status || 'unknown',
     ]);
 
     const csv = [headers, ...csvData].map(row => row.join(',')).join('\n');
@@ -207,7 +296,7 @@ export default function Reports() {
     });
   };
 
-  const uniqueServices = Array.from(new Set(tests.map(t => t.service_url)));
+  const uniqueServices = Array.from(new Set(tests.map(t => getDisplayServiceName(t))));
   const uniqueTestTypes = Array.from(new Set(tests.map(t => t.test_type)));
 
   const chartData = useMemo(() => (
@@ -564,7 +653,7 @@ export default function Reports() {
                     <thead>
                       <tr className="border-b">
                         <th className="text-left p-4">Date</th>
-                        <th className="text-left p-4">URL</th>
+                        <th className="text-left p-4">Service</th>
                         <th className="text-left p-4">Type</th>
                         <th className="text-right p-4">Latency</th>
                         <th className="text-right p-4">Uptime</th>
@@ -578,7 +667,8 @@ export default function Reports() {
                             {format(new Date(test.created_at), 'MMM dd, yyyy HH:mm')}
                           </td>
                           <td className="p-4 text-sm truncate max-w-xs">
-                            {test.service_url}
+                            <div className="font-medium">{getDisplayServiceName(test)}</div>
+                            <div className="text-xs text-muted-foreground truncate">{test.service_url}</div>
                           </td>
                           <td className="p-4 text-sm capitalize">{test.test_type}</td>
                           <td className="p-4 text-sm text-right">{test.latency?.toFixed(2) || 'N/A'}ms</td>

@@ -46,6 +46,16 @@ type TopUpRecord = {
   created_at: string;
 };
 
+type SubscriptionRecord = {
+  plan: string | null;
+  status: string | null;
+  current_period_end?: string | null;
+};
+
+type UserBillingProfile = {
+  performance_plan?: string | null;
+};
+
 type PackName = 'starter' | 'growth' | 'pro';
 
 type RazorpaySuccessResponse = {
@@ -95,6 +105,8 @@ export default function Profile() {
   const [ratings, setRatings] = useState<any[]>([]);
   const [tokenTransactions, setTokenTransactions] = useState<TokenTransaction[]>([]);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
+  const [currentPlan, setCurrentPlan] = useState<string>('free');
+  const [planStatusText, setPlanStatusText] = useState<string>('Pay only when tokens run low');
   const [paymentInitiated, setPaymentInitiated] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
   const [topUpLoading, setTopUpLoading] = useState<Record<PackName, boolean>>({
@@ -149,6 +161,11 @@ export default function Profile() {
         .on(
           'postgres_changes',
           { event: '*', schema: 'public', table: 'payments', filter: `user_id=eq.${user.id}` },
+          scheduleRefresh,
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'subscriptions', filter: `user_id=eq.${user.id}` },
           scheduleRefresh,
         )
         .on(
@@ -301,7 +318,7 @@ export default function Profile() {
 
       const db = supabase as any;
 
-      const [transactionsRes, paymentsRes, topupsRes] = await Promise.all([
+      const [transactionsRes, paymentsRes, topupsRes, subscriptionsRes, billingProfileRes] = await Promise.all([
         db
           .from('token_transactions')
           .select('id, type, amount, balance_after, description, endpoint, created_at')
@@ -320,6 +337,18 @@ export default function Profile() {
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(8),
+        db
+          .from('subscriptions')
+          .select('plan, status, current_period_end')
+          .eq('user_id', user.id)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        db
+          .from('user_profiles')
+          .select('performance_plan')
+          .eq('id', user.id)
+          .maybeSingle(),
       ]);
       if (!transactionsRes.error) {
         setTokenTransactions((transactionsRes.data || []) as TokenTransaction[]);
@@ -338,10 +367,42 @@ export default function Profile() {
         .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))
         .slice(0, 12);
       setPaymentHistory(mergedPayments);
+
+      const subscription = !subscriptionsRes.error ? (subscriptionsRes.data as SubscriptionRecord | null) : null;
+      const billingProfile = !billingProfileRes.error ? (billingProfileRes.data as UserBillingProfile | null) : null;
+      const normalizedSubscriptionPlan = String(subscription?.plan ?? '').trim().toLowerCase();
+      const normalizedProfilePlan = String(billingProfile?.performance_plan ?? '').trim().toLowerCase();
+      const paidPlanFromPayments =
+        payments.find((row) => {
+          const plan = String(row.pack_name ?? '').trim().toLowerCase();
+          return row.status === 'success' && (plan === 'pro' || plan === 'enterprise');
+        })?.pack_name?.trim().toLowerCase() ?? '';
+      const activePaidPlan =
+        subscription?.status === 'active' && (normalizedSubscriptionPlan === 'pro' || normalizedSubscriptionPlan === 'enterprise')
+          ? normalizedSubscriptionPlan
+          : normalizedProfilePlan === 'pro' || normalizedProfilePlan === 'enterprise'
+            ? normalizedProfilePlan
+            : paidPlanFromPayments === 'pro' || paidPlanFromPayments === 'enterprise'
+              ? paidPlanFromPayments
+              : 'free';
+
+      setCurrentPlan(activePaidPlan);
+
+      if (activePaidPlan === 'pro' || activePaidPlan === 'enterprise') {
+        const renewalText =
+          subscription?.status === 'active' && subscription.current_period_end
+            ? `Active until ${new Date(subscription.current_period_end).toLocaleDateString('en-IN')}`
+            : 'Active paid plan';
+        setPlanStatusText(renewalText);
+      } else {
+        setPlanStatusText('Pay only when tokens run low');
+      }
     } catch (error) {
       console.error('Error fetching subscription details:', error);
     }
   };
+
+  const planLabel = currentPlan === 'free' ? 'Free + Top-up' : currentPlan.charAt(0).toUpperCase() + currentPlan.slice(1);
 
   const formatNumber = (value: number) => new Intl.NumberFormat('en-IN').format(value || 0);
   const formatRupeesFromPaise = (paise: number) =>
@@ -729,8 +790,8 @@ export default function Profile() {
                       </CardTitle>
                     </CardHeader>
                     <CardContent>
-                      <p className="text-3xl font-semibold">Free + Top-up</p>
-                      <p className="text-xs text-muted-foreground mt-1">Pay only when tokens run low</p>
+                      <p className="text-3xl font-semibold">{planLabel}</p>
+                      <p className="text-xs text-muted-foreground mt-1">{planStatusText}</p>
                     </CardContent>
                   </Card>
                 </div>

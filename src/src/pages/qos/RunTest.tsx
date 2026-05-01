@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,6 +37,7 @@ type RunResult = {
   data?: {
     id: string;
     service_url: string;
+    service_id?: string | null;
     test_type: TestType;
     created_at: string;
     latency: number | null;
@@ -106,6 +107,7 @@ const formatMetric = (value: number | null | undefined, suffix = '') =>
 
 export default function RunTest() {
   const location = useLocation();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const { tokenUsage, refreshTokenUsage, deductTokens, refundTokens, applyOptimisticBalance } = useTokenUsage();
   const [loading, setLoading] = useState(false);
@@ -121,6 +123,16 @@ export default function RunTest() {
   const [selectedService, setSelectedService] = useState<string>('manual');
   const [runAllLoading, setRunAllLoading] = useState(false);
   const [quota, setQuota] = useState<QuotaState | null>(null);
+
+  const isValidHttpUrl = (value: string) => {
+    if (!value || value === '#') return false;
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  };
 
   const selectedCost = useMemo(() => getOperationCost(testType), [testType]);
   const estimatedAfter = useMemo(() => Math.max(0, tokenUsage.balance - selectedCost), [selectedCost, tokenUsage.balance]);
@@ -178,7 +190,7 @@ export default function RunTest() {
         const options =
           (data || [])
             .map((s: any) => ({ id: s.id as string, name: s.name as string, url: (s.base_url || s.docs_url || '') as string }))
-            .filter((s) => Boolean(s.url));
+            .filter((s) => isValidHttpUrl(s.url));
         setServiceOptions(options);
       } catch {
         try {
@@ -190,7 +202,7 @@ export default function RunTest() {
           const options =
             (data || [])
               .map((s: any) => ({ id: s.id as string, name: s.name as string, url: (s.base_url || '') as string }))
-              .filter((s) => Boolean(s.url));
+              .filter((s) => isValidHttpUrl(s.url));
           setServiceOptions(options);
         } catch {
           setServiceOptions([]);
@@ -218,6 +230,15 @@ export default function RunTest() {
       return;
     }
 
+    if (!isValidHttpUrl(activeUrl)) {
+      toast({
+        title: 'Invalid URL',
+        description: 'Please use a valid http(s) service URL. Placeholder values like # cannot be tested.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (quota?.runsRemaining === 0 && quota.exhaustedMessage) {
       toast({ title: 'Run limit reached', description: quota.exhaustedMessage, variant: 'destructive' });
       return;
@@ -241,6 +262,7 @@ export default function RunTest() {
       const { data, error } = await invokeWithLiveToken<RunResult>('run-qos-test', {
         body: {
           serviceUrl: activeUrl,
+          serviceId: selectedService !== 'manual' ? selectedService : null,
           testType,
           forceFresh: activeForceFresh,
           isScheduled: false,
@@ -294,6 +316,7 @@ export default function RunTest() {
       await refreshTokenUsage();
       await loadRecent();
       await loadQuota();
+      navigate('/qos/reports');
     } catch (error) {
       setStatusText('Failed');
       if (shouldOptimisticDeduct) refundTokens(selectedCost);
@@ -449,6 +472,7 @@ export default function RunTest() {
                       const { data, error } = await invokeWithLiveToken<RunResult>('run-qos-test', {
                         body: {
                           serviceUrl: service.url,
+                          serviceId: service.id,
                           testType,
                           forceFresh: false,
                           isScheduled: false,
@@ -477,6 +501,9 @@ export default function RunTest() {
                       title: 'Run-all finished',
                       description: `Success: ${success}, Failed: ${failed}`,
                     });
+                    if (success > 0) {
+                      navigate('/qos/reports');
+                    }
                   } catch (error) {
                     const message = await extractFunctionErrorMessage(error, 'Run-all failed');
                     toast({ title: 'Run-all failed', description: message, variant: 'destructive' });
