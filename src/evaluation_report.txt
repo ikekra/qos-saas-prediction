@@ -1,0 +1,35 @@
+QOSCollab ML Training Evaluation Report
+========================================
+Generated (UTC): 2026-02-26T18:41:55.398444+00:00
+Dataset: C:\Users\Asus\Desktop\New folder\source\src\qos_dataset.csv
+Rows Used: 3000
+Features: latency, throughput, availability, reliability, response_time
+Target: efficiency_score
+CV Folds: 5
+
+Model Comparison
+----------------------------------------
+LinearRegression
+  Holdout -> R2: 0.5350, MAE: 1.4590, RMSE: 1.8122
+  CV Mean -> R2: 0.5179, MAE: 1.4974, RMSE: 1.8851
+  CV Std  -> R2: 0.0102, MAE: 0.0274, RMSE: 0.0256
+
+RandomForest
+  Holdout -> R2: 0.4905, MAE: 1.5374, RMSE: 1.8969
+  CV Mean -> R2: 0.4906, MAE: 1.5474, RMSE: 1.9371
+  CV Std  -> R2: 0.0251, MAE: 0.0439, RMSE: 0.0394
+
+GradientBoosting
+  Holdout -> R2: 0.5126, MAE: 1.5000, RMSE: 1.8554
+  CV Mean -> R2: 0.5026, MAE: 1.5307, RMSE: 1.9142
+  CV Std  -> R2: 0.0209, MAE: 0.0323, RMSE: 0.0346
+
+Best Model
+----------------------------------------
+Selected: LinearRegression
+Holdout R2: 0.5350
+Holdout MAE: 1.4590
+Holdout RMSE: 1.8122
+CV R2 Mean: 0.5179
+CV MAE Mean: 1.4974
+CV RMSE Mean: 1.8851

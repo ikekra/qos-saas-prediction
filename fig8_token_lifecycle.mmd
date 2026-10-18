@@ -1,0 +1,9 @@
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Reserved: Reserve tokens
+    Reserved --> Deducted: Test success
+    Reserved --> PartiallyRefunded: Partial failure
+    Reserved --> FullyRefunded: Full failure
+    Deducted --> Idle: Finalize
+    PartiallyRefunded --> Idle: Finalize
+    FullyRefunded --> Idle: Finalize

@@ -1,0 +1,857 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Header } from '@/components/Header';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { supabase } from '@/integrations/supabase/client';
+import { BarChart3, Clock, TrendingUp, Activity, Play, AlertTriangle, Download, Sparkles } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { ChartContainer } from '@/components/ui/chart';
+import { format } from 'date-fns';
+import { motion } from 'framer-motion';
+import { Badge } from '@/components/ui/badge';
+import { useTokenUsage } from '@/hooks/useTokenUsage';
+import { buildHeatmap, withFallbackRows, type QosStatusRow } from '@/lib/qos-mock-data';
+
+interface Stats {
+  totalTests: number;
+  avgLatency: number;
+  avgUptime: number;
+  successRate: number;
+}
+
+interface Test {
+  id: string;
+  service_url: string;
+  test_type: string;
+  latency: number;
+  uptime: number;
+  throughput: number;
+  success_rate: number;
+  created_at: string;
+}
+
+interface Prediction {
+  id: string;
+  service_id?: string | null;
+  latency: number;
+  throughput: number;
+  availability: number;
+  reliability: number;
+  response_time: number;
+  predicted_efficiency: number;
+  created_at: string;
+}
+
+export default function QosDashboard() {
+  const { toast } = useToast();
+  const { tokenUsage, refreshTokenUsage } = useTokenUsage();
+  const [stats, setStats] = useState<Stats>({
+    totalTests: 0,
+    avgLatency: 0,
+    avgUptime: 0,
+    successRate: 0,
+  });
+  const [tests, setTests] = useState<Test[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [alerts, setAlerts] = useState<string[]>([]);
+  const [predictions, setPredictions] = useState<Prediction[]>([]);
+  const [predictionLoading, setPredictionLoading] = useState(true);
+  const [realtimeStatus, setRealtimeStatus] = useState<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+  const retryRef = useRef(0);
+  const retryTimer = useRef<number | null>(null);
+  const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const notifiedRef = useRef(false);
+
+  // Alert thresholds
+  const LATENCY_THRESHOLD = 500; // ms
+  const UPTIME_THRESHOLD = 95; // %
+  const SUCCESS_THRESHOLD = 90; // %
+
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
+  useEffect(() => {
+    if (tests.length === 0) return;
+
+    const latencyValues = tests.map((t) => t.latency).filter((v): v is number => typeof v === 'number');
+    const uptimeValues = tests.map((t) => t.uptime).filter((v): v is number => typeof v === 'number');
+    const successValues = tests.map((t) => t.success_rate).filter((v): v is number => typeof v === 'number');
+
+    const avgLatency = latencyValues.length > 0
+      ? latencyValues.reduce((sum, v) => sum + v, 0) / latencyValues.length
+      : 0;
+    const avgUptime = uptimeValues.length > 0
+      ? uptimeValues.reduce((sum, v) => sum + v, 0) / uptimeValues.length
+      : 0;
+    const successRate = successValues.length > 0
+      ? successValues.reduce((sum, v) => sum + v, 0) / successValues.length
+      : 0;
+
+    setStats({
+      totalTests: tests.length,
+      avgLatency,
+      avgUptime,
+      successRate,
+    });
+
+    const newAlerts: string[] = [];
+    if (avgLatency > LATENCY_THRESHOLD) {
+      newAlerts.push(`High average latency detected: ${avgLatency.toFixed(2)}ms`);
+    }
+    if (avgUptime < UPTIME_THRESHOLD && uptimeValues.length > 0) {
+      newAlerts.push(`Low uptime detected: ${avgUptime.toFixed(2)}%`);
+    }
+    if (successRate < SUCCESS_THRESHOLD && successValues.length > 0) {
+      newAlerts.push(`Low success rate: ${successRate.toFixed(2)}%`);
+    }
+    setAlerts(newAlerts);
+  }, [tests]);
+
+  useEffect(() => {
+    const scheduleRetry = () => {
+      const attempt = Math.min(retryRef.current + 1, 5);
+      retryRef.current = attempt;
+      const delay = Math.min(30000, 1000 * 2 ** attempt);
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      retryTimer.current = window.setTimeout(() => startSubscription(), delay);
+    };
+
+    const startSubscription = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+
+      const channel = supabase
+        .channel(`tests-realtime-${user.id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'tests',
+            filter: `user_id=eq.${user.id}`,
+          },
+          (payload) => {
+            const row = payload.new as Test;
+            setTests((prev) => [row, ...prev].slice(0, 20));
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'qos_predictions',
+            filter: `user_id=eq.${user.id}`,
+          },
+          (payload) => {
+            const row = payload.new as Prediction;
+            setPredictions((prev) => [row, ...prev].slice(0, 10));
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('connected');
+            retryRef.current = 0;
+            notifiedRef.current = false;
+            return;
+          }
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setRealtimeStatus('reconnecting');
+            if (!notifiedRef.current) {
+              notifiedRef.current = true;
+              toast({
+                title: 'Realtime disconnected',
+                description: 'Trying to reconnect to live updates.',
+                variant: 'destructive',
+              });
+            }
+            scheduleRetry();
+          }
+          if (status === 'CLOSED') {
+            setRealtimeStatus('disconnected');
+            scheduleRetry();
+          }
+        });
+
+      channelRef.current = channel;
+    };
+
+    startSubscription();
+
+    return () => {
+      if (retryTimer.current) window.clearTimeout(retryTimer.current);
+      if (channelRef.current) supabase.removeChannel(channelRef.current);
+    };
+  }, [toast]);
+
+  const fetchStats = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) return;
+
+      const { data: testsData, error } = await supabase
+        .from('tests')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (error) throw error;
+
+      if (testsData && testsData.length > 0) {
+        setTests(testsData);
+        void refreshTokenUsage();
+        
+        const latencyValues = testsData.map((t) => t.latency).filter((v): v is number => typeof v === 'number');
+        const uptimeValues = testsData.map((t) => t.uptime).filter((v): v is number => typeof v === 'number');
+        const successValues = testsData.map((t) => t.success_rate).filter((v): v is number => typeof v === 'number');
+
+        const avgLatency = latencyValues.length > 0
+          ? latencyValues.reduce((sum, v) => sum + v, 0) / latencyValues.length
+          : 0;
+        const avgUptime = uptimeValues.length > 0
+          ? uptimeValues.reduce((sum, v) => sum + v, 0) / uptimeValues.length
+          : 0;
+        const successRate = successValues.length > 0
+          ? successValues.reduce((sum, v) => sum + v, 0) / successValues.length
+          : 0;
+
+        setStats({
+          totalTests: testsData.length,
+          avgLatency,
+          avgUptime,
+          successRate,
+        });
+
+        // Check for alerts
+        const newAlerts: string[] = [];
+        if (avgLatency > LATENCY_THRESHOLD) {
+          newAlerts.push(`High average latency detected: ${avgLatency.toFixed(2)}ms`);
+        }
+        if (avgUptime < UPTIME_THRESHOLD && uptimeValues.length > 0) {
+          newAlerts.push(`Low uptime detected: ${avgUptime.toFixed(2)}%`);
+        }
+        if (successRate < SUCCESS_THRESHOLD && successValues.length > 0) {
+          newAlerts.push(`Low success rate: ${successRate.toFixed(2)}%`);
+        }
+
+        if (newAlerts.length > 0) {
+          setAlerts(newAlerts);
+        } else {
+          setAlerts([]);
+        }
+      }
+
+      const { data: predictionData, error: predictionError } = await supabase
+        .from('qos_predictions')
+        .select('id, service_id, latency, throughput, availability, reliability, response_time, predicted_efficiency, created_at')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (predictionError) throw predictionError;
+      setPredictions((predictionData || []) as Prediction[]);
+    } catch (error: any) {
+      toast({
+        title: "Error Loading Stats",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+      setPredictionLoading(false);
+    }
+  };
+
+  const exportToCSV = () => {
+    if (tests.length === 0) {
+      toast({
+        title: "No Data",
+        description: "No test results to export",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const headers = ['Date', 'Service URL', 'Test Type', 'Latency (ms)', 'Uptime (%)', 'Throughput', 'Success Rate (%)'];
+    const csvData = tests.map(test => [
+      format(new Date(test.created_at), 'yyyy-MM-dd HH:mm:ss'),
+      test.service_url,
+      test.test_type,
+      test.latency?.toFixed(2) || 'N/A',
+      test.uptime?.toFixed(2) || 'N/A',
+      test.throughput?.toFixed(2) || 'N/A',
+      test.success_rate?.toFixed(2) || 'N/A',
+    ]);
+
+    const csv = [headers, ...csvData].map(row => row.join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `qos-tests-${format(new Date(), 'yyyy-MM-dd')}.csv`;
+    a.click();
+    window.URL.revokeObjectURL(url);
+
+    toast({
+      title: "Export Successful",
+      description: "Test results exported to CSV",
+    });
+  };
+
+  const chartData = useMemo(() => (
+    tests.slice(0, 10).reverse().map(test => ({
+      name: format(new Date(test.created_at), 'MMM dd HH:mm'),
+      latency: test.latency ?? 0,
+      uptime: test.uptime ?? 0,
+      success: test.success_rate ?? 0,
+    }))
+  ), [tests]);
+
+  const predictionChartData = useMemo(() => (
+    predictions.slice(0, 8).reverse().map((row) => ({
+      name: format(new Date(row.created_at), 'MMM dd HH:mm'),
+      efficiency: row.predicted_efficiency ?? 0,
+    }))
+  ), [predictions]);
+
+  const avgPrediction =
+    predictions.length > 0
+      ? predictions.reduce((sum, row) => sum + (row.predicted_efficiency ?? 0), 0) / predictions.length
+      : 0;
+
+  const statusRows: QosStatusRow[] = withFallbackRows(
+    tests.slice(0, 6).map((t) => {
+      const latency = Number(t.latency ?? 0);
+      const uptime = Number(t.uptime ?? 0);
+      const success = Number(t.success_rate ?? 0);
+      const throughput = Number(t.throughput ?? 0);
+      const p50 = Math.max(1, Math.round(latency * 0.8));
+      const p90 = Math.max(1, Math.round(latency * 1.1));
+      const p99 = Math.max(1, Math.round(latency * 1.45));
+      const status: QosStatusRow["status"] = uptime >= 99 && success >= 98 ? "green" : uptime >= 97 ? "yellow" : "red";
+      return {
+        service: t.service_url || "unknown-service",
+        responseMs: latency,
+        uptime,
+        errorRate: Math.max(0, Number((100 - success).toFixed(2))),
+        throughput,
+        p50,
+        p90,
+        p99,
+        slaBreaches: status === "green" ? 0 : status === "yellow" ? 2 : 5,
+        slaCompliance: status === "green" ? 99.5 : status === "yellow" ? 97.8 : 95.2,
+        status,
+      };
+    })
+  );
+
+  const heatmapData = buildHeatmap(24);
+
+  const tokenByOperationChart = tokenUsage.perOperationSpend.map((row) => ({
+    operation: row.operation.toUpperCase(),
+    tokens: row.tokens,
+  }));
+
+  return (
+    <div className="min-h-screen bg-background post-login-theme">
+      <Header />
+      
+      <div className="container py-12 relative">
+        <div className="pointer-events-none absolute inset-0 -z-10">
+          <div className="absolute -top-24 right-0 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
+          <div className="absolute top-48 -left-10 h-80 w-80 rounded-full bg-accent/20 blur-3xl" />
+          <div className="absolute bottom-8 right-10 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+        </div>
+
+        <motion.div
+          className="relative overflow-hidden rounded-3xl p-8 md:p-12 hero-surface text-white"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+        >
+          <div className="absolute inset-0 hero-veil" />
+          <div className="absolute inset-0 opacity-30 pattern-grid" />
+          <div className="absolute -bottom-16 -right-10 h-56 w-56 rounded-full bg-white/10 blur-3xl" />
+
+          <div className="relative z-10 flex flex-col gap-8 md:flex-row md:items-center md:justify-between">
+            <div className="max-w-2xl space-y-4">
+              <div className="inline-flex items-center gap-2 rounded-full bg-white/15 px-4 py-1 text-xs font-semibold uppercase tracking-[0.2em]">
+                <Sparkles className="h-3.5 w-3.5" />
+                Live QoS Intelligence
+              </div>
+              <h1 className="text-4xl md:text-5xl font-semibold leading-tight">
+                Unified QoS Command Center
+              </h1>
+              <p className="text-white/80 text-base md:text-lg">
+                Monitor latency and uptime, track ML predictions, and export verified history - all in one place.
+              </p>
+              <div className="flex flex-wrap gap-3 text-sm text-white/80">
+                <span className="rounded-full bg-white/15 px-3 py-1">Latency monitoring</span>
+                <span className="rounded-full bg-white/15 px-3 py-1">Prediction tracking</span>
+                <span className="rounded-full bg-white/15 px-3 py-1">CSV exports</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-3">
+              <Badge variant="secondary" className="self-start">
+                {realtimeStatus === 'connected'
+                  ? 'Realtime: Connected'
+                  : realtimeStatus === 'reconnecting'
+                    ? 'Realtime: Reconnecting'
+                    : 'Realtime: Disconnected'}
+              </Badge>
+              <Button onClick={exportToCSV} variant="secondary" size="lg" className="gap-2 shadow-soft">
+                <Download className="h-4 w-4" />
+                Export CSV
+              </Button>
+              <Link to="/qos/run-test">
+                <Button size="lg" className="gap-2 bg-white text-foreground hover:bg-white/90">
+                  <Play className="h-4 w-4" />
+                  Run New Test
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </motion.div>
+
+        {/* Alerts Section */}
+        {alerts.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="mb-6"
+          >
+            {alerts.map((alert, index) => (
+              <Card key={index} className="mb-4 border-orange-500 bg-orange-50 dark:bg-orange-950/20">
+                <CardContent className="py-4 flex items-center gap-3">
+                  <AlertTriangle className="h-5 w-5 text-orange-500" />
+                  <p className="text-sm font-medium text-orange-900 dark:text-orange-200">{alert}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </motion.div>
+        )}
+
+        {/* Stats Grid */}
+        <motion.div 
+          className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-10 mt-10"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.2 }}
+        >
+          <Card className="brand-card hover-scale">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">Total Tests</CardTitle>
+              <div className="brand-icon">
+                <BarChart3 className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold">{stats.totalTests}</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Performance tests run
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card hover-scale">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">Avg Latency</CardTitle>
+              <div className="brand-icon">
+                <Clock className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold">{stats.avgLatency.toFixed(2)}ms</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Average response time
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card hover-scale">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">Avg Uptime</CardTitle>
+              <div className="brand-icon">
+                <TrendingUp className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold">{stats.avgUptime.toFixed(2)}%</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Service availability
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card hover-scale">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
+              <div className="brand-icon">
+                <Activity className="h-4 w-4" />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold">{stats.successRate.toFixed(2)}%</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                Test completion rate
+              </p>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div
+          className="grid gap-6 lg:grid-cols-3 mb-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.3 }}
+        >
+          <Card className="shadow-medium lg:col-span-2 border border-border/70">
+            <CardHeader>
+              <CardTitle>Live Prediction Trend</CardTitle>
+              <CardDescription>Latest ML efficiency scores</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {predictionLoading ? (
+                <div className="py-8 text-center text-muted-foreground">Loading predictions...</div>
+              ) : predictionChartData.length === 0 ? (
+                <div className="py-8 text-center text-muted-foreground">No predictions yet.</div>
+              ) : (
+                <ChartContainer
+                  config={{
+                    efficiency: { label: "Efficiency (%)", color: "hsl(var(--primary))" },
+                  }}
+                  className="h-[260px]"
+                >
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={predictionChartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" fontSize={12} />
+                      <YAxis fontSize={12} domain={[0, 100]} />
+                      <Tooltip />
+                      <Line type="monotone" dataKey="efficiency" stroke="hsl(var(--primary))" strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-medium border border-border/70">
+            <CardHeader>
+              <CardTitle>Prediction Snapshot</CardTitle>
+              <CardDescription>Recent activity & average</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <p className="text-xs uppercase text-muted-foreground">Avg Efficiency</p>
+                <p className="text-3xl font-bold">{avgPrediction.toFixed(2)}%</p>
+              </div>
+              <div className="space-y-2">
+                {predictionLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading history...</p>
+                ) : predictions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No predictions yet.</p>
+                ) : (
+                  predictions.slice(0, 5).map((row) => (
+                    <div key={row.id} className="rounded-md border p-3">
+                      <p className="text-sm font-medium">
+                        {Number(row.predicted_efficiency).toFixed(2)}% efficiency
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {format(new Date(row.created_at), 'MMM dd, yyyy HH:mm')}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+              <Link to="/qos/predict">
+                <Button variant="secondary" className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0">View Prediction Page</Button>
+              </Link>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div
+          className="grid gap-6 lg:grid-cols-2 mb-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.35 }}
+        >
+          <Card className="shadow-medium border border-border/70">
+            <CardHeader>
+              <CardTitle>Token Consumption by Operation</CardTitle>
+              <CardDescription>Current billing cycle token spend</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {tokenByOperationChart.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No operation spend yet.</p>
+              ) : (
+                <ChartContainer config={{ tokens: { label: "Tokens", color: "hsl(var(--primary))" } }} className="h-[260px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={tokenByOperationChart}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="operation" fontSize={12} />
+                      <YAxis fontSize={12} />
+                      <Tooltip />
+                      <Bar dataKey="tokens" fill="hsl(var(--primary))" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </ChartContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-medium border border-border/70">
+            <CardHeader>
+              <CardTitle>Failure Heatmap (24h)</CardTitle>
+              <CardDescription>Failure frequency by hour of day</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-12 gap-2">
+                {heatmapData.map((cell) => {
+                  const tone =
+                    cell.failures >= 6 ? "bg-rose-500/70" :
+                    cell.failures >= 4 ? "bg-amber-500/70" :
+                    cell.failures >= 2 ? "bg-yellow-300/70" : "bg-emerald-400/60";
+                  return (
+                    <div key={cell.hour} className={`rounded-md p-2 text-center text-xs ${tone}`}>
+                      <p className="font-medium">{cell.hour}</p>
+                      <p>{cell.failures}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Real-Time Charts */}
+        {tests.length > 0 && (
+          <motion.div 
+            className="grid gap-6 lg:grid-cols-2 mb-8"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.4 }}
+          >
+            <Card className="shadow-medium">
+              <CardHeader>
+                <CardTitle>Latency Trend</CardTitle>
+                <CardDescription>Real-time response time monitoring</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ChartContainer
+                  config={{
+                    latency: {
+                      label: "Latency (ms)",
+                      color: "hsl(var(--primary))",
+                    },
+                  }}
+                  className="h-[300px]"
+                >
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={chartData}>
+                      <defs>
+                        <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.8}/>
+                          <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" fontSize={12} />
+                      <YAxis fontSize={12} />
+                      <Tooltip />
+                      <Area 
+                        type="monotone" 
+                        dataKey="latency" 
+                        stroke="hsl(var(--primary))" 
+                        fillOpacity={1} 
+                        fill="url(#colorLatency)"
+                        strokeWidth={2}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </ChartContainer>
+              </CardContent>
+            </Card>
+
+            <Card className="shadow-medium">
+              <CardHeader>
+                <CardTitle>Performance Metrics</CardTitle>
+                <CardDescription>Uptime and success rate over time</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ChartContainer
+                  config={{
+                    uptime: {
+                      label: "Uptime (%)",
+                      color: "hsl(var(--accent))",
+                    },
+                    success: {
+                      label: "Success Rate (%)",
+                      color: "hsl(var(--secondary))",
+                    },
+                  }}
+                  className="h-[300px]"
+                >
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="name" fontSize={12} />
+                      <YAxis fontSize={12} />
+                      <Tooltip />
+                      <Legend />
+                      <Line 
+                        type="monotone" 
+                        dataKey="uptime" 
+                        stroke="hsl(var(--accent))" 
+                        strokeWidth={2}
+                        name="Uptime (%)"
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="success" 
+                        stroke="hsl(var(--secondary))" 
+                        strokeWidth={2}
+                        name="Success Rate (%)"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </ChartContainer>
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+
+        {/* Quick Actions */}
+        <motion.div 
+          className="grid gap-6 md:grid-cols-2 lg:grid-cols-3"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.6 }}
+        >
+          <Card className="brand-card hover-scale">
+            <CardHeader>
+              <CardTitle>Run Performance Test</CardTitle>
+              <CardDescription>
+                Test your web service for latency, load, uptime, or throughput
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link to="/qos/run-test">
+                <Button className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0">
+                  <Play className="mr-2 h-4 w-4" />
+                  Start Test
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card hover-scale">
+            <CardHeader>
+              <CardTitle>View Reports</CardTitle>
+              <CardDescription>
+                Analyze historical data and performance trends
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link to="/qos/reports">
+                <Button variant="secondary" className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0">
+                  <BarChart3 className="mr-2 h-4 w-4" />
+                  View Reports
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card hover-scale">
+            <CardHeader>
+              <CardTitle>Analytics Dashboard</CardTitle>
+              <CardDescription>
+                Explore efficiency trends and performance correlations
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link to="/qos/analytics">
+                <Button variant="secondary" className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0">
+                  <BarChart3 className="mr-2 h-4 w-4" />
+                  View Analytics
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card className="brand-card hover-scale">
+            <CardHeader>
+              <CardTitle>AI-Driven Insights</CardTitle>
+              <CardDescription>
+                Get intelligent recommendations to optimize performance
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Link to="/qos/predict">
+                <Button variant="outline" className="w-full transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0">
+                  View Insights
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div
+          className="mt-8"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.75 }}
+        >
+          <Card className="shadow-medium border border-border/70">
+            <CardHeader>
+              <CardTitle>QoS Status Board & Comparison</CardTitle>
+              <CardDescription>Per-service SLA metrics and side-by-side QoS score view</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {statusRows.map((row) => (
+                  <div key={`${row.service}-${row.responseMs}`} className="rounded-lg border p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium">{row.service}</p>
+                      <span className={`text-xs rounded-full px-2 py-1 ${
+                        row.status === "green" ? "bg-emerald-100 text-emerald-700" :
+                        row.status === "yellow" ? "bg-amber-100 text-amber-700" :
+                        "bg-rose-100 text-rose-700"
+                      }`}>
+                        {row.status.toUpperCase()}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                      <p>Response: {row.responseMs}ms</p>
+                      <p>Uptime: {row.uptime.toFixed(2)}%</p>
+                      <p>Error: {row.errorRate.toFixed(2)}%</p>
+                      <p>Throughput: {row.throughput.toFixed(1)} req/s</p>
+                      <p>P50/P90/P99: {row.p50}/{row.p90}/{row.p99}</p>
+                      <p>SLA: {row.slaCompliance.toFixed(1)}% ({row.slaBreaches} breaches)</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {loading && (
+          <div className="text-center py-12">
+            <p className="text-muted-foreground">Loading statistics...</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

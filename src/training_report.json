@@ -1,0 +1,69 @@
+{
+  "generated_at_utc": "2026-02-28T19:04:02.524280+00:00",
+  "rows_used": 2650,
+  "features": [
+    "latency",
+    "throughput",
+    "availability",
+    "reliability",
+    "response_time",
+    "latency_ratio",
+    "load_factor",
+    "availability_weight"
+  ],
+  "models": [
+    {
+      "model_name": "GradientBoost",
+      "best_params": {
+        "model__learning_rate": 0.05,
+        "model__max_depth": 3,
+        "model__n_estimators": 200
+      },
+      "cv_r2_mean": 0.3786187057450457,
+      "cv_r2_std": 0.02812573631179509,
+      "cv_mae_mean": 1.4873179837681034,
+      "cv_mae_std": 0.05263711764309014,
+      "cv_rmse_mean": 1.8538912242103411,
+      "cv_rmse_std": 0.055307259458340745
+    },
+    {
+      "model_name": "RandomForest",
+      "best_params": {
+        "model__max_depth": 12,
+        "model__min_samples_leaf": 2,
+        "model__n_estimators": 500
+      },
+      "cv_r2_mean": 0.36159065473313967,
+      "cv_r2_std": 0.026508655385390937,
+      "cv_mae_mean": 1.513291632325354,
+      "cv_mae_std": 0.05466936734562771,
+      "cv_rmse_mean": 1.8793563983291275,
+      "cv_rmse_std": 0.05809773688621543
+    }
+  ],
+  "best_model": {
+    "model_name": "GradientBoost",
+    "best_params": {
+      "model__learning_rate": 0.05,
+      "model__max_depth": 3,
+      "model__n_estimators": 200
+    },
+    "cv_r2_mean": 0.3786187057450457,
+    "cv_r2_std": 0.02812573631179509,
+    "cv_mae_mean": 1.4873179837681034,
+    "cv_mae_std": 0.05263711764309014,
+    "cv_rmse_mean": 1.8538912242103411,
+    "cv_rmse_std": 0.055307259458340745
+  },
+  "ensemble_models": [
+    "GradientBoost",
+    "RandomForest"
+  ],
+  "ensemble_holdout": {
+    "r2": 0.6803962723501666,
+    "mae": 1.0706177169494573,
+    "rmse": 1.3324372674383782
+  },
+  "feature_importance_plot": "feature_importance.png",
+  "xgboost_used": false
+}
